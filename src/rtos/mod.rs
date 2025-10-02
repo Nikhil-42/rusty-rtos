@@ -46,13 +46,34 @@ unsafe fn HardFault(ef: &ExceptionFrame) -> ! {
 
 const _: () = {
     let _ = cortex_m_rt::Exception::SysTick;
+    let _ = cortex_m_rt::Exception::PendSV;
 };
 
 #[no_mangle]
 #[unsafe(naked)]
-pub unsafe extern "C" fn SysTick() {  // Saves caller-saved registers
+pub unsafe extern "C" fn SysTick() {
     naked_asm!(
-        // "pop {{r7, lr}}",
+        "ldr r0, ={G8TOR_RTOS}",    // G8torRtos* r0 = &G8TOR_RTOS
+        "cpsid i",                  // Begin critical section
+        "ldr r1, [r0, #4]",         // u32 r1 = G8TOR_RTOS.system_time
+        "add r1, r1, #1",           // r1++
+        "str r1, [r0, #4]",         // G8TOR_RTOS.system_time = r1
+        "cpsie i",                  // End critical section
+
+        // Set the PENDSVSET bit to delay the context switch until after all 
+        // other interrupts have been serviced.
+        "ldr r0, =0xE000ED04",
+        "ldr r1, =0x10000000",
+        "str r1, [r0]",      
+        "bx lr",
+        G8TOR_RTOS = sym G8TOR_RTOS
+    )
+}
+
+#[no_mangle]
+#[unsafe(naked)]
+pub unsafe extern "C" fn PendSV() {
+    naked_asm!(
         "cpsid i",              // Begin critical section
         "push {{r4-r11}}",      // Save callee-saved registers (for the current thread)
         "ldr r0, ={G8TOR_RTOS}",  // G8torRtos* r0 = &G8TOR_RTOS
@@ -70,12 +91,6 @@ pub unsafe extern "C" fn SysTick() {  // Saves caller-saved registers
         SCHEDULER = sym G8torRtos::scheduler
     );
 }
-
-// #[exception]
-// fn PendSV() {
-//     // Perform scheduling
-// }
-
 
 impl G8torRtos {
     pub unsafe fn new(peripherals: cortex_m::Peripherals) -> &'static mut Self {
@@ -109,7 +124,7 @@ impl G8torRtos {
 
     /// Add a thread to the RTOS
     /// Safety: This function should only be called, at the start of the program BEFORE launch
-    pub unsafe fn add_thread(&mut self, thread: fn() -> !) -> Result<(), ()> {
+    pub unsafe fn add_thread(&mut self, thread: extern "C" fn() -> !) -> Result<(), ()> {
         // Find an empty TCB slot
         let _self_ptr = self as *mut Self;
         for id in 0..MAX_THREADS {
@@ -189,7 +204,8 @@ impl G8torRtos {
         syst.set_reload(cortex_m::peripheral::SYST::get_ticks_per_10ms() / 10 - 1); // 1 ms
         // syst.set_reload(2000);
         unsafe {
-            scb.set_priority(SystemHandler::SysTick, 7);
+            scb.set_priority(SystemHandler::SysTick, 0); // Highest priority
+            scb.set_priority(SystemHandler::PendSV, 0b11100000); // Lowest priority
         };
         syst.enable_interrupt();  // Note: interrupts are still disabled globally
         syst.enable_counter();
