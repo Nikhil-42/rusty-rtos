@@ -2,31 +2,23 @@
 #![no_main]
 
 use eel4745c::rtos;
-use panic_semihosting as _;
+use panic_halt as _;
 
-use core::fmt::Write;
 use tm4c123x_hal::{self as hal, pac, prelude::*};
 
 use cortex_m_rt::entry;
 
-fn blink_red() -> ! {
+extern "C" fn blink_red() -> ! {
     loop {
-        // Delay
-        // for _ in 0..5_000_000 {
-            cortex_m::asm::nop();
-        // }
+        cortex_m::asm::nop();
     }
 }
 
-fn blink_blue() -> !{
+extern "C" fn blink_blue() -> ! {
     loop {
-        // Delay
-        // for _ in 0..5_000_000 {
-            cortex_m::asm::nop();
-        // }
+        cortex_m::asm::nop();
     }
 }
-
 
 #[entry]
 fn main() -> ! {
@@ -60,8 +52,8 @@ fn main() -> ! {
 
     unsafe {
         let inst = rtos::G8torRtos::new(pac::CorePeripherals::take().unwrap());
-        let red_thread = inst.add_thread(blink_red);
-        let blue_thread = inst.add_thread(blink_blue);
-        inst.launch();
+        let red_thread = inst.add_thread(blink_red).expect("Failed to add red thread");
+        let blue_thread = inst.add_thread(blink_blue).expect("Failed to add blue thread");
+        inst.launch()
     }
 }
