@@ -1,15 +1,15 @@
 use core::arch::naked_asm;
-use core::cell::UnsafeCell;
+use core::mem::MaybeUninit;
 use core::{arch::asm, ptr::NonNull};
 
+use cortex_m::peripheral::scb::SystemHandler;
 use cortex_m::peripheral::syst::SystClkSource;
-use cortex_m::peripheral::scb::{Exception, SystemHandler};
 use cortex_m_rt::{exception, ExceptionFrame};
 
 const MAX_THREADS: usize = 2;
 const STACK_SIZE: usize = 32;
 
-static mut G8TOR_RTOS: Option<G8torRtos> = None;
+static mut G8TOR_RTOS: MaybeUninit<G8torRtos> = MaybeUninit::uninit();
 
 #[repr(C)]
 pub struct TCB {
@@ -24,7 +24,7 @@ pub struct G8torRtos {
     running: NonNull<TCB>,
     system_time: u32,
     threads: [Option<TCB>; MAX_THREADS],
-    stacks: [[u32; STACK_SIZE]; MAX_THREADS],
+    stacks: MaybeUninit<[[u32; STACK_SIZE]; MAX_THREADS]>,
     peripherals: cortex_m::Peripherals,
 }
 
@@ -37,10 +37,10 @@ pub struct G8torRtos {
 
 #[exception]
 unsafe fn HardFault(ef: &ExceptionFrame) -> ! {
-    cortex_m::asm::nop();
     let hfsr = (*cortex_m::peripheral::SCB::PTR).hfsr.read();
     let cfsr = (*cortex_m::peripheral::SCB::PTR).cfsr.read();
 
+    cortex_m::asm::nop();
     loop {}
 }
 
@@ -60,11 +60,11 @@ pub unsafe extern "C" fn SysTick() {
         "str r1, [r0, #4]",         // G8TOR_RTOS.system_time = r1
         "cpsie i",                  // End critical section
 
-        // Set the PENDSVSET bit to delay the context switch until after all 
+        // Set the PENDSVSET bit to delay the context switch until after all
         // other interrupts have been serviced.
         "ldr r0, =0xE000ED04",
         "ldr r1, =0x10000000",
-        "str r1, [r0]",      
+        "str r1, [r0]",
         "bx lr",
         G8TOR_RTOS = sym G8TOR_RTOS
     )
@@ -82,7 +82,7 @@ pub unsafe extern "C" fn PendSV() {
         "push {{r0, lr}}",      // Save G8torRtos* r0 on stack (and lr for alignment)
         "bl {SCHEDULER}",       // Call scheduler (r0 = *G8torRtos)
         "pop {{r0, lr}}",       // Restore G8torRtos* r0 from stack (and lr for alignment)
-        "ldr r1, [r0, #0]",     // TCB* r1 = G8TOR_RTOS.running 
+        "ldr r1, [r0, #0]",     // TCB* r1 = G8TOR_RTOS.running
         "ldr sp, [r1, #4]",     // u32* sp = r1->sp
         "pop {{r4-r11}}",       // Restore callee-saved registers (for the new thread)
         "cpsie i",              // Enable interrupts (guarantees the next instruction is not interrupted)
@@ -94,27 +94,23 @@ pub unsafe extern "C" fn PendSV() {
 
 impl G8torRtos {
     pub unsafe fn new(peripherals: cortex_m::Peripherals) -> &'static mut Self {
-        // Ensure only one instance is created
-        if let Some(_) = G8TOR_RTOS {
-            panic!("RTOS already initialized!");
-        }
-
         // Disable interrupts during initialization
         cortex_m::interrupt::disable();
 
-        // SAFETY: We only write to G8TOR_RTOS here, and no other references exist.
-        let rtos = Some(Self {
-            threads: [const { None }; MAX_THREADS],
-            stacks: [[0xCC; STACK_SIZE]; MAX_THREADS],
-            system_time: 0,
-            running: core::ptr::NonNull::dangling(),
-            peripherals,
-        });
+        // SAFETY: We only write to G8TOR_RTOS here no reads
+        // We are in a single-threaded context (no interrupts)
+        // so this is the only access to G8TOR_RTOS
+        let ptr = G8TOR_RTOS.as_mut_ptr();
+        (&raw mut (*ptr).running).write(core::ptr::NonNull::dangling());
+        (&raw mut (*ptr).system_time).write(0);
+        (&raw mut (*ptr).threads).write([const { None }; MAX_THREADS]);
+        (&raw mut (*ptr).stacks).write(MaybeUninit::uninit());
+        (&raw mut (*ptr).peripherals).write(peripherals);
+        // G8TOR_RTOS is now fully initialized
 
-        cortex_m::asm::nop();
-        (&raw mut G8TOR_RTOS).write(rtos);
-
-        G8TOR_RTOS.as_mut().unwrap_unchecked()
+        // Return a mutable reference to the static instance
+        // To enable user code to add threads
+        G8TOR_RTOS.assume_init_mut()
     }
 
     extern "C" fn scheduler(&mut self) {
@@ -130,27 +126,30 @@ impl G8torRtos {
         for id in 0..MAX_THREADS {
             if self.threads[id].is_none() {
                 // Initialize the stack for the new thread
-                let stack = &mut self.stacks[id] as *mut [u32; STACK_SIZE];
-                let sp = stack.add(STACK_SIZE);
-                let sp = sp.sub(16); // Reserve const DEFAULT_TCB: TCB = TCB {
+                // This is okay because self.stacks is a MaybeUninit and we only write to it here
+                let stack = self.stacks.as_mut_ptr().cast::<[u32; STACK_SIZE]>().add(id);
+                let sp = stack.cast::<u32>().add(STACK_SIZE);
+
+                // Reserve const space for the initial stack frame
+                let sp = sp.sub(16);
 
                 // Set up initial stack frame
-                (*sp)[15] = 0x01000000; // xPSR
-                (*sp)[14] = thread as u32; // PC
-                (*sp)[13] = 0x14141414; // R14 (LR)
-                (*sp)[12] = 0x12121212; // R12
-                (*sp)[11] = 0x03030303; // R3
-                (*sp)[10] = 0x02020202; // R2
-                (*sp)[9]  = 0x01010101; // R1
-                (*sp)[8]  = 0x00000000; // R0
-                (*sp)[7]  = 0x11111111;  // R11
-                (*sp)[6]  = 0x10101010; // R10
-                (*sp)[5]  = 0x09090909; // R9
-                (*sp)[4]  = 0x08080808; // R8
-                (*sp)[3]  = 0x07070707; // R7
-                (*sp)[2]  = 0x06060606; // R6
-                (*sp)[1]  = 0x05050505; // R5
-                (*sp)[0]  = 0x04040404; // R4
+                sp.add(15).write(0x01000000); // xPSR
+                sp.add(14).write(thread as u32); // PC
+                sp.add(13).write(0x14141414); // R14 (LR)
+                sp.add(12).write(0x12121212); // R12
+                sp.add(11).write(0x03030303); // R3
+                sp.add(10).write(0x02020202); // R2
+                sp.add(9).write(0x01010101); // R1
+                sp.add(8).write(0x00000000); // R0
+                sp.add(7).write(0x11111111); // R11
+                sp.add(6).write(0x10101010); // R10
+                sp.add(5).write(0x09090909); // R9
+                sp.add(4).write(0x08080808); // R8
+                sp.add(3).write(0x07070707); // R7
+                sp.add(2).write(0x06060606); // R6
+                sp.add(1).write(0x05050505); // R5
+                sp.add(0).write(0x04040404); // R4
 
                 // Create the new TCB and link it into the circular doubly linked list
                 let thread = self.threads[id].insert(TCB {
@@ -166,8 +165,9 @@ impl G8torRtos {
                         NonNull::new_unchecked((*_self_ptr).threads[0].as_mut().unwrap_unchecked());
                     // SAFETY: We just checked that i > 0 also id = i implies that threads[k] is Some for k < i
                     // so k = 0 is definitely Some and k = i-1 is definitely Some
-                    thread.prev =
-                        NonNull::new_unchecked((*_self_ptr).threads[id - 1].as_mut().unwrap_unchecked());
+                    thread.prev = NonNull::new_unchecked(
+                        (*_self_ptr).threads[id - 1].as_mut().unwrap_unchecked(),
+                    );
                     // Update the previous TCB's next pointer to point to the new TCB
                     self.threads[id - 1].as_mut().unwrap_unchecked().next =
                         NonNull::new_unchecked(thread as *mut TCB);
@@ -202,12 +202,11 @@ impl G8torRtos {
         syst.clear_current();
         syst.set_clock_source(SystClkSource::Core);
         syst.set_reload(cortex_m::peripheral::SYST::get_ticks_per_10ms() / 10 - 1); // 1 ms
-        // syst.set_reload(2000);
         unsafe {
             scb.set_priority(SystemHandler::SysTick, 0); // Highest priority
             scb.set_priority(SystemHandler::PendSV, 0b11100000); // Lowest priority
         };
-        syst.enable_interrupt();  // Note: interrupts are still disabled globally
+        syst.enable_interrupt(); // Note: interrupts are still disabled globally
         syst.enable_counter();
 
         // Start the first thread by loading its context
@@ -220,9 +219,8 @@ impl G8torRtos {
             "add sp, sp, #4",         // Skip xPSR
             "cpsie i",                // Enable interrupts
             "bx lr",                  // Branch to the thread's PC
-            sp = in(reg) self.running.as_ptr()
-        );
-
-        cortex_m::asm::udf(); // Should never reach here
+            sp = in(reg) self.running.as_ptr(),
+            options(noreturn)
+        )
     }
 }
