@@ -1,0 +1,38 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug (GDB OpenOCD)",
+            "type": "cortex-debug",
+            "request": "attach",
+            "preLaunchTask": "rust: cargo build",
+            "showDevDebugOutput": "raw",
+            "device": "TM4C123GH6PM",
+            "servertype": "openocd",
+            "cwd": "${workspaceFolder}",
+            "executable": "${workspaceFolder}/target/thumbv7em-none-eabihf/debug/lab3a",
+            "runToEntryPoint": "main",
+            "configFiles": ["board/ti_ek-tm4c123gxl.cfg"],
+            // "svdFile": "${workspaceFolder}/TM4C123.svd",
+            "postAttachCommands": [
+                "set print asm-demangle on",
+                "monitor arm semihosting enable",
+                "load",
+                "stepi"
+            ]
+        },
+        {
+            "name": "Debug (LLDBG OpenOCD)",
+            "type": "lldb",
+            "request": "attach",
+            "preLaunchTask": "rust: cargo build",
+            "targetCreateCommands": ["target create ${workspaceFolder}/target/thumbv7em-none-eabihf/debug/lab3a"],
+            "processCreateCommands": [
+                "gdb-remote localhost:3333",
+                // "monitor arm semihosting enable",
+                // "load",
+                // "stepi"
+            ]
+        }
+    ]
+}
