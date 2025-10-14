@@ -1,22 +1,38 @@
 #![no_std]
 #![no_main]
 
+use cortex_m::delay;
 use eel4745c::rtos;
+use embedded_hal::digital::OutputPin;
 use panic_halt as _;
 
-use tm4c123x_hal::{self as hal, pac, prelude::*};
+use tm4c123x_hal::{self as hal, gpio::{gpioa::{PA0, PA1}, gpiof::{PF1, PF2, PF3}, AlternateFunction, Output, PushPull, AF1}, pac::{self, UART0}, prelude::*, serial::Serial};
 
 use cortex_m_rt::entry;
 
+static mut UART0_S: Option<Serial<UART0, PA1<AlternateFunction<AF1, PushPull>>, PA0<AlternateFunction<AF1, PushPull>>, (), ()>> = None;
+static mut R_LED_S: Option<PF1<Output<PushPull>>> = None;
+static mut B_LED_S: Option<PF2<Output<PushPull>>> = None;
+
 extern "C" fn blink_red() -> ! {
+    let mut r_led = unsafe { R_LED_S.take() }.expect("Red LED is initialized.");
+    let mut state = false;
+
     loop {
-        cortex_m::asm::nop();
+        r_led.set_state(state.into()).unwrap();
+        state = !state;
+        cortex_m::asm::delay(500_000_000 / 12);
     }
 }
 
 extern "C" fn blink_blue() -> ! {
+    let mut b_led = unsafe { B_LED_S.take() }.expect("Blue LED is initialized.");
+    let mut state = false;
+
     loop {
-        cortex_m::asm::nop();
+        b_led.set_state(state.into()).unwrap();
+        state = !state;
+        cortex_m::asm::delay(1000_000_000 / 12);
     }
 }
 
@@ -34,7 +50,7 @@ fn main() -> ! {
     let mut porta = p.GPIO_PORTA.split(&sc.power_control);
 
     // Activate UART
-    let mut uart = hal::serial::Serial::uart0(
+    let mut uart: tm4c123x_hal::serial::Serial<pac::UART0, tm4c123x_hal::gpio::gpioa::PA1<tm4c123x_hal::gpio::AlternateFunction<tm4c123x_hal::gpio::AF1, PushPull>>, tm4c123x_hal::gpio::gpioa::PA0<tm4c123x_hal::gpio::AlternateFunction<tm4c123x_hal::gpio::AF1, PushPull>>, (), ()> = hal::serial::Serial::uart0(
         p.UART0,
         porta
             .pa1
@@ -49,6 +65,16 @@ fn main() -> ! {
         &clocks,
         &sc.power_control,
     );
+
+    let portf = p.GPIO_PORTF.split(&sc.power_control);
+
+    unsafe {
+        R_LED_S.insert(portf.pf1.into_push_pull_output());
+        B_LED_S.insert(portf.pf2.into_push_pull_output());
+        UART0_S.insert(uart);
+    }
+
+
 
     unsafe {
         let inst = rtos::G8torRtos::new(pac::CorePeripherals::take().unwrap());

@@ -1,5 +1,6 @@
 use core::arch::naked_asm;
 use core::mem::MaybeUninit;
+use core::sync::atomic::{AtomicU32};
 use core::{arch::asm, ptr::NonNull};
 
 use cortex_m::peripheral::scb::SystemHandler;
@@ -7,9 +8,38 @@ use cortex_m::peripheral::syst::SystClkSource;
 use cortex_m_rt::{exception, ExceptionFrame};
 
 const MAX_THREADS: usize = 2;
-const STACK_SIZE: usize = 32;
+const STACK_SIZE: usize = 512;
+const NUM_SEMAPHORES: usize = 4;
 
 static mut G8TOR_RTOS: MaybeUninit<G8torRtos> = MaybeUninit::uninit();
+
+
+pub struct Semaphore {
+    count: AtomicU32,
+}
+
+impl Semaphore {
+    pub const fn new(initial_count: u32) -> Self {
+        Semaphore {
+            count: AtomicU32::new(initial_count),
+        }
+    }
+
+    pub fn acquire(&self) {
+        // Spin until we can decrement the count
+        while self.count.fetch_update(core::sync::atomic::Ordering::SeqCst, core::sync::atomic::Ordering::SeqCst, |count| {
+            if count > 0 {
+                Some(count - 1)
+            } else {
+                None
+            }
+        }).is_err() {}
+    }
+
+    pub fn release(&self) {
+        self.count.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 #[repr(C)]
 pub struct TCB {
@@ -24,6 +54,7 @@ pub struct G8torRtos {
     running: NonNull<TCB>,
     system_time: u32,
     threads: [Option<TCB>; MAX_THREADS],
+    semaphores: [Option<Semaphore>; NUM_SEMAPHORES],
     stacks: MaybeUninit<[[u32; STACK_SIZE]; MAX_THREADS]>,
     peripherals: cortex_m::Peripherals,
 }
@@ -104,6 +135,7 @@ impl G8torRtos {
         (&raw mut (*ptr).running).write(core::ptr::NonNull::dangling());
         (&raw mut (*ptr).system_time).write(0);
         (&raw mut (*ptr).threads).write([const { None }; MAX_THREADS]);
+        (&raw mut (*ptr).semaphores).write([const { None }; NUM_SEMAPHORES]);
         (&raw mut (*ptr).stacks).write(MaybeUninit::uninit());
         (&raw mut (*ptr).peripherals).write(peripherals);
         // G8TOR_RTOS is now fully initialized
@@ -222,5 +254,11 @@ impl G8torRtos {
             sp = in(reg) self.running.as_ptr(),
             options(noreturn)
         )
+    }
+
+    pub fn register_semaphore(&mut self, initial_count: u32) -> &Semaphore {
+        self.semaphores.iter_mut().find(|s| s.is_none()).expect("No free semaphores").get_or_insert(Semaphore {
+            count: AtomicU32::new(initial_count),
+        })
     }
 }
