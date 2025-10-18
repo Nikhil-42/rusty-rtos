@@ -7,8 +7,8 @@ use cortex_m::peripheral::scb::SystemHandler;
 use cortex_m::peripheral::syst::SystClkSource;
 use cortex_m_rt::{exception, ExceptionFrame};
 
-const MAX_THREADS: usize = 2;
-const STACK_SIZE: usize = 512;
+const MAX_THREADS: usize = 6;
+const STACK_SIZE: usize = 512; // 2KB stack
 const NUM_SEMAPHORES: usize = 4;
 
 static mut G8TOR_RTOS: MaybeUninit<G8torRtos> = MaybeUninit::uninit();
