@@ -12,6 +12,10 @@ cortex-m = { path = "../cortex-m/cortex-m" }
 cortex-m-rt = { path = "../cortex-m/cortex-m-rt" }
 tm4c123x-hal = { path = "../tm4c-hal/tm4c123x-hal" }
 
+[profile.dev]
+opt-level = 3
+debug = true
+
 [dependencies]
 embedded-hal = "1.0.0"
 eh0 = { package = "embedded-hal", version = "0.2.7", features = ["unproven"] }
