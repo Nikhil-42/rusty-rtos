@@ -1,65 +1,30 @@
-use core::arch::naked_asm;
+mod atomics;
+mod handlers;
+
+use crate::rtos::atomics::{
+    G8torAtomic, G8torAtomicHandle, G8torMutexHandle, G8torSemaphoreHandle,
+};
+
 use core::convert::TryInto as _;
 use core::mem::{ManuallyDrop, MaybeUninit};
-use core::num::NonZeroU8;
-use core::sync::atomic::{AtomicBool, AtomicU8};
+use core::sync::atomic::AtomicBool;
 use core::{arch::asm, ptr::NonNull};
 
 use cortex_m::peripheral::scb::SystemHandler;
 use cortex_m::peripheral::syst::SystClkSource;
-use cortex_m_rt::{exception, ExceptionFrame};
+
+pub use crate::rtos::handlers::SyscallReturn;
 
 const MAX_THREADS: usize = 6;
 const STACK_SIZE: usize = 512; // 2KB stack
 const NUM_ATOMICS: usize = 8;
+const NAME_LEN: usize = 16;
 
-#[unsafe(naked)]
-extern "C" fn syscall<const num: u8>() {
-    naked_asm!("svc {num}", num = const num);
-}
-
-
+// SAFETY: It is never safe to have any references to this static while the RTOS is running because system_time is volatile
 static mut G8TOR_RTOS: MaybeUninit<G8torRtos> = MaybeUninit::uninit();
 
-#[derive(Clone, Copy)]
-pub struct G8torAtomicHandle {
-    index: NonZeroU8,
-}
-
-impl From<G8torSemaphoreHandle> for G8torAtomicHandle {
-    #[inline(always)]
-    fn from(sem: G8torSemaphoreHandle) -> Self {
-        G8torAtomicHandle { index: sem.index }
-    }
-}
-
-impl From<G8torMutexHandle> for G8torAtomicHandle {
-    #[inline(always)]
-    fn from(mutex: G8torMutexHandle) -> Self {
-        G8torAtomicHandle { index: mutex.index }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub struct G8torMutexHandle {
-    index: NonZeroU8,
-}
-
-pub struct G8torMutexLock {}
-
-#[derive(Clone, Copy)]
-pub struct G8torSemaphoreHandle {
-    index: NonZeroU8,
-    max_count: u8,
-}
-
-pub union G8torAtomic {
-    count: ManuallyDrop<AtomicU8>,
-    mutex: ManuallyDrop<AtomicBool>,
-}
-
 #[repr(C)]
-pub struct TCB {
+struct TCB {
     pub id: u32,
     pub sp: NonNull<u32>, // Stack pointer (points to top of stack)
     pub next: NonNull<TCB>,
@@ -67,7 +32,7 @@ pub struct TCB {
     pub sleep_until: u32,
     pub priority: u8,
     pub blocked_by: Option<G8torAtomicHandle>, // A handle to the blocking atomic (if any)
-    pub name: [u8; 8],
+    pub name: [u8; NAME_LEN],
 }
 
 #[repr(C)]
@@ -81,61 +46,14 @@ pub struct G8torRtos {
     peripherals: cortex_m::Peripherals,
 }
 
-#[exception]
-unsafe fn HardFault(_ef: &ExceptionFrame) -> ! {
-    let _hfsr = (*cortex_m::peripheral::SCB::PTR).hfsr.read();
-    let _cfsr = (*cortex_m::peripheral::SCB::PTR).cfsr.read();
-
-    cortex_m::asm::nop();
-    loop {}
+// Executes in critical section
+unsafe extern "C" fn _scheduler(rtos: *mut G8torRtos) {
+    // Context switch logic
+    (*rtos).running = (*rtos).running.read().next;
 }
 
-const _: () = {
-    let _ = cortex_m_rt::Exception::SysTick;
-    let _ = cortex_m_rt::Exception::PendSV;
-};
+unsafe extern "C" fn _syscall() {
 
-#[no_mangle]
-#[unsafe(naked)]
-pub unsafe extern "C" fn SysTick() {
-    naked_asm!(
-        "ldr r0, ={G8TOR_RTOS}",    // G8torRtos* r0 = &G8TOR_RTOS
-        "cpsid i",                  // Begin critical section
-        "ldr r1, [r0, #4]",         // u32 r1 = G8TOR_RTOS.system_time
-        "add r1, r1, #1",           // r1++
-        "str r1, [r0, #4]",         // G8TOR_RTOS.system_time = r1
-        "cpsie i",                  // End critical section
-
-        // Set the PENDSVSET bit to delay the context switch until after all
-        // other interrupts have been serviced.
-        "ldr r0, =0xE000ED04",
-        "ldr r1, =0x10000000",
-        "str r1, [r0]",
-        "bx lr",
-        G8TOR_RTOS = sym G8TOR_RTOS
-    )
-}
-
-#[no_mangle]
-#[unsafe(naked)]
-pub unsafe extern "C" fn PendSV() {
-    naked_asm!(
-        "cpsid i",              // Begin critical section
-        "push {{r4-r11}}",      // Save callee-saved registers (for the current thread)
-        "ldr r0, ={G8TOR_RTOS}",  // G8torRtos* r0 = &G8TOR_RTOS
-        "ldr r1, [r0, #0]",     // TCB* r1 = G8TOR_RTOS.running
-        "str sp, [r1, #4]",     // u32* r1->sp = sp
-        "push {{r0, lr}}",      // Save G8torRtos* r0 on stack (and lr for alignment)
-        "bl {SCHEDULER}",       // Call scheduler (r0 = *G8torRtos)
-        "pop {{r0, lr}}",       // Restore G8torRtos* r0 from stack (and lr for alignment)
-        "ldr r1, [r0, #0]",     // TCB* r1 = G8TOR_RTOS.running
-        "ldr sp, [r1, #4]",     // u32* sp = r1->sp
-        "pop {{r4-r11}}",       // Restore callee-saved registers (for the new thread)
-        "cpsie i",              // Enable interrupts (guarantees the next instruction is not interrupted)
-        "bx lr",                // Branch to the new thread's PC (in lr) and restore caller-saved registers
-        G8TOR_RTOS = sym G8TOR_RTOS,
-        SCHEDULER = sym G8torRtos::scheduler
-    );
 }
 
 impl G8torRtos {
@@ -151,13 +69,7 @@ impl G8torRtos {
         (&raw mut (*ptr).running).write(core::ptr::NonNull::dangling());
         (&raw mut (*ptr).system_time).write(0);
         (&raw mut (*ptr).threads).write([const { None }; MAX_THREADS]);
-        (&raw mut (*ptr).atomics).write(
-            [const {
-                G8torAtomic {
-                    count: ManuallyDrop::new(AtomicU8::new(0)),
-                }
-            }; NUM_ATOMICS],
-        );
+        (&raw mut (*ptr).atomics).write([const { G8torAtomic::new_semaphore(0u8) }; NUM_ATOMICS]);
         (&raw mut (*ptr).stacks).write(MaybeUninit::uninit());
         (&raw mut (*ptr).peripherals).write(peripherals);
         // G8TOR_RTOS is now fully initialized
@@ -168,18 +80,9 @@ impl G8torRtos {
         G8TOR_RTOS.assume_init_mut()
     }
 
-    extern "C" fn scheduler(&mut self) {
-        // Context switch logic
-        self.running = unsafe { self.running.read().next };
-    }
-
     /// Add a thread to the RTOS
     /// Safety: This function should only be called, at the start of the program BEFORE launch
-    pub fn add_thread(&mut self, name: &str, thread: extern "C" fn() -> !) -> Result<(), ()> {
-        if name.len() > 8 {
-            return Err(()); // Name too long
-        }
-
+    pub fn add_thread(&mut self, name: &[u8; NAME_LEN], thread: extern "C" fn() -> !) -> Result<(), ()> {
         // Find an empty TCB slot
         let _self_ptr = self as *mut Self;
         for id in 0..MAX_THREADS {
@@ -224,7 +127,7 @@ impl G8torRtos {
                     priority: 0,
                     blocked_by: None,
                     sleep_until: 0,
-                    name: name.as_bytes().try_into().unwrap(),
+                    name: *name,
                 });
 
                 if id > 0 {
@@ -260,17 +163,13 @@ impl G8torRtos {
     pub fn init_semaphore(
         &mut self,
         initial_count: u8,
-        max_count: u8,
     ) -> Result<G8torSemaphoreHandle, ()> {
         for index in 0..NUM_ATOMICS {
             if (self.atomic_mask & (1 << index)) == 0 {
                 // Found an empty atomic slot
                 self.atomic_mask |= 1 << index;
-                self.atomics[index].count = ManuallyDrop::new(AtomicU8::new(initial_count));
-                return Ok(G8torSemaphoreHandle {
-                    index: NonZeroU8::new((index + 1) as u8).unwrap(),
-                    max_count,
-                });
+                self.atomics[index] = G8torAtomic::new_semaphore(initial_count);
+                return Ok(index.into());
             }
         }
 
@@ -278,50 +177,19 @@ impl G8torRtos {
     }
 
     pub fn signal_semaphore(&self, handle: G8torSemaphoreHandle) {
-        let index = (handle.index.get() - 1) as usize;
-        let atomic = &self.atomics[index];
+        let index: usize = handle.into();
+        let count = unsafe { &self.atomics[index].count };
 
-        // Increment the count atomically
-        let count = unsafe { &atomic.count }; // SAFETY: Because the SemaphoreHandle was obtained from init_semaphore, we know that this atomic is a count
+        // Critical section requires supervisor mode
+        // Start critical section
+        let res = count.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
 
-        let res = count.fetch_update(
-            core::sync::atomic::Ordering::SeqCst,
-            core::sync::atomic::Ordering::SeqCst,
-            |current| {
-                if current < handle.max_count {
-                    Some(current + 1)
-                } else {
-                    None
-                }
-            },
-        );
-
-        match res {
-            Ok(0) => {
-                // There was possibly a thread blocked on this semaphore
-                // Wake up one blocked thread
-                for tcb_opt in self.threads.iter() {
-                    if let Some(tcb) = tcb_opt {
-                        if let Some(blocking_atomic) = tcb.blocked_by {
-                            if blocking_atomic.index == handle.index {
-                                // Unblock this thread
-                                unsafe {
-                                    let tcb_mut =
-                                        &mut *(tcb as *const TCB as *mut TCB); // SAFETY: We have exclusive access to the RTOS and thus to all TCBs
-                                    tcb_mut.blocked_by = None;
-                                }
-                                break; // Only unblock one thread
-                            }
-                        }
-                    }
-                }
-            },
-            Ok(_) => {},
-            Err(_) => {
-                // Semaphore was already at max count so block the current thread and yield
-                let current_tcb = unsafe { self.running.as_mut() }; // SAFETY: We
-            },
+        if res == 0 {
+            // Unblock a thread waiting on this semaphore
+            // Requires critical section
         }
+
+        // End critical section
     }
 
     pub fn init_mutex(&mut self) -> Result<G8torMutexHandle, ()> {
@@ -330,9 +198,7 @@ impl G8torRtos {
                 // Found an empty atomic slot
                 self.atomic_mask |= 1 << index;
                 self.atomics[index].mutex = ManuallyDrop::new(AtomicBool::new(true));
-                return Ok(G8torMutexHandle {
-                    index: NonZeroU8::new((index + 1) as u8).unwrap(),
-                });
+                return Ok(index.into());
             }
         }
 
