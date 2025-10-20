@@ -77,7 +77,7 @@ fn main() -> ! {
 
 
     unsafe {
-        let inst = rtos::G8torRtos::new(pac::CorePeripherals::take().unwrap());
+        let inst = rtos::G8torRtos::get(pac::CorePeripherals::take().unwrap());
         let red_thread = inst.add_thread(blink_red).expect("Failed to add red thread");
         let blue_thread = inst.add_thread(blink_blue).expect("Failed to add blue thread");
         inst.launch()

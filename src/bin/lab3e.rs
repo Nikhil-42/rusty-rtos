@@ -2,7 +2,7 @@
 #![no_main]
 
 use bmi160::{interface::I2cInterface, Bmi160};
-use eel4745c::rtos::{self, Semaphore};
+use eel4745c::rtos::{self, G8torAtomic};
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_bus::{i2c::AtomicDevice, util::AtomicCell};
 use opt300x::{ic::Opt3001, mode::Continuous, Opt300x};
@@ -16,8 +16,8 @@ use cortex_m_rt::entry;
 use core::{fmt::Write, mem::MaybeUninit};
 
 static mut I2C_BUS: MaybeUninit<AtomicCell<I2C<I2C1, (PA6<AlternateFunction<AF3, PushPull>>, PA7<AlternateFunction<AF3, OpenDrain<PullUp>>>)>>> = MaybeUninit::uninit();
-static UART_SEM: Semaphore = Semaphore::new(1);
-static IMU_SEM: Semaphore = Semaphore::new(1);
+static UART_SEM: G8torAtomic = G8torAtomic::new(1);
+static IMU_SEM: G8torAtomic = G8torAtomic::new(1);
 static mut UART0_S: Option<Serial<UART0, PA1<AlternateFunction<AF1, PushPull>>, PA0<AlternateFunction<AF1, PushPull>>, (), ()>> = None;
 static mut SW1_S: Option<PF4<Input<PullUp>>> = None;
 static mut SW2_S: Option<PF0<Input<PullUp>>> = None;
@@ -234,7 +234,7 @@ fn main() -> ! {
     }
 
     unsafe {
-        let inst = rtos::G8torRtos::new(pac::CorePeripherals::take().unwrap());
+        let inst = rtos::G8torRtos::get(pac::CorePeripherals::take().unwrap());
         let accelx_thread = inst.add_thread(poll_accelx).expect("Failed to add blue thread");
         let gyroy_thread = inst.add_thread(poll_gyroy).expect("Failed to add red thread");
         let optical_thread = inst.add_thread(poll_optical).expect("Failed to add green thread");

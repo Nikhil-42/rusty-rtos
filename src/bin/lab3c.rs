@@ -124,7 +124,7 @@ fn main() -> ! {
     }
 
     unsafe {
-        let inst = rtos::G8torRtos::new(pac::CorePeripherals::take().unwrap());
+        let inst = rtos::G8torRtos::get(pac::CorePeripherals::take().unwrap());
         let sw1_thread = inst.add_thread(poll_sw1).expect("Failed to add red thread");
         let sw2_thread = inst.add_thread(poll_sw2).expect("Failed to add blue thread");
         

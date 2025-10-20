@@ -1,6 +1,8 @@
 use core::arch::naked_asm;
-use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicU32};
+use core::convert::TryInto as _;
+use core::mem::{ManuallyDrop, MaybeUninit};
+use core::num::NonZeroU8;
+use core::sync::atomic::{AtomicBool, AtomicU8};
 use core::{arch::asm, ptr::NonNull};
 
 use cortex_m::peripheral::scb::SystemHandler;
@@ -9,36 +11,51 @@ use cortex_m_rt::{exception, ExceptionFrame};
 
 const MAX_THREADS: usize = 6;
 const STACK_SIZE: usize = 512; // 2KB stack
-const NUM_SEMAPHORES: usize = 4;
+const NUM_ATOMICS: usize = 8;
+
+#[unsafe(naked)]
+extern "C" fn syscall<const num: u8>() {
+    naked_asm!("svc {num}", num = const num);
+}
+
 
 static mut G8TOR_RTOS: MaybeUninit<G8torRtos> = MaybeUninit::uninit();
 
-
-pub struct Semaphore {
-    count: AtomicU32,
+#[derive(Clone, Copy)]
+pub struct G8torAtomicHandle {
+    index: NonZeroU8,
 }
 
-impl Semaphore {
-    pub const fn new(initial_count: u32) -> Self {
-        Semaphore {
-            count: AtomicU32::new(initial_count),
-        }
+impl From<G8torSemaphoreHandle> for G8torAtomicHandle {
+    #[inline(always)]
+    fn from(sem: G8torSemaphoreHandle) -> Self {
+        G8torAtomicHandle { index: sem.index }
     }
+}
 
-    pub fn acquire(&self) {
-        // Spin until we can decrement the count
-        while self.count.fetch_update(core::sync::atomic::Ordering::SeqCst, core::sync::atomic::Ordering::SeqCst, |count| {
-            if count > 0 {
-                Some(count - 1)
-            } else {
-                None
-            }
-        }).is_err() {}
+impl From<G8torMutexHandle> for G8torAtomicHandle {
+    #[inline(always)]
+    fn from(mutex: G8torMutexHandle) -> Self {
+        G8torAtomicHandle { index: mutex.index }
     }
+}
 
-    pub fn release(&self) {
-        self.count.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-    }
+#[derive(Clone, Copy)]
+pub struct G8torMutexHandle {
+    index: NonZeroU8,
+}
+
+pub struct G8torMutexLock {}
+
+#[derive(Clone, Copy)]
+pub struct G8torSemaphoreHandle {
+    index: NonZeroU8,
+    max_count: u8,
+}
+
+pub union G8torAtomic {
+    count: ManuallyDrop<AtomicU8>,
+    mutex: ManuallyDrop<AtomicBool>,
 }
 
 #[repr(C)]
@@ -47,6 +64,10 @@ pub struct TCB {
     pub sp: NonNull<u32>, // Stack pointer (points to top of stack)
     pub next: NonNull<TCB>,
     pub prev: NonNull<TCB>,
+    pub sleep_until: u32,
+    pub priority: u8,
+    pub blocked_by: Option<G8torAtomicHandle>, // A handle to the blocking atomic (if any)
+    pub name: [u8; 8],
 }
 
 #[repr(C)]
@@ -54,22 +75,16 @@ pub struct G8torRtos {
     running: NonNull<TCB>,
     system_time: u32,
     threads: [Option<TCB>; MAX_THREADS],
-    semaphores: [Option<Semaphore>; NUM_SEMAPHORES],
+    atomics: [G8torAtomic; NUM_ATOMICS],
+    atomic_mask: u8,
     stacks: MaybeUninit<[[u32; STACK_SIZE]; MAX_THREADS]>,
     peripherals: cortex_m::Peripherals,
 }
 
-// #[unsafe(naked)]
-// unsafe extern "C" fn SysTick() {
-//     naked_asm!(
-//         "nop"
-//     );
-// }
-
 #[exception]
-unsafe fn HardFault(ef: &ExceptionFrame) -> ! {
-    let hfsr = (*cortex_m::peripheral::SCB::PTR).hfsr.read();
-    let cfsr = (*cortex_m::peripheral::SCB::PTR).cfsr.read();
+unsafe fn HardFault(_ef: &ExceptionFrame) -> ! {
+    let _hfsr = (*cortex_m::peripheral::SCB::PTR).hfsr.read();
+    let _cfsr = (*cortex_m::peripheral::SCB::PTR).cfsr.read();
 
     cortex_m::asm::nop();
     loop {}
@@ -124,6 +139,7 @@ pub unsafe extern "C" fn PendSV() {
 }
 
 impl G8torRtos {
+    #[allow(static_mut_refs)]
     pub unsafe fn new(peripherals: cortex_m::Peripherals) -> &'static mut Self {
         // Disable interrupts during initialization
         cortex_m::interrupt::disable();
@@ -135,10 +151,17 @@ impl G8torRtos {
         (&raw mut (*ptr).running).write(core::ptr::NonNull::dangling());
         (&raw mut (*ptr).system_time).write(0);
         (&raw mut (*ptr).threads).write([const { None }; MAX_THREADS]);
-        (&raw mut (*ptr).semaphores).write([const { None }; NUM_SEMAPHORES]);
+        (&raw mut (*ptr).atomics).write(
+            [const {
+                G8torAtomic {
+                    count: ManuallyDrop::new(AtomicU8::new(0)),
+                }
+            }; NUM_ATOMICS],
+        );
         (&raw mut (*ptr).stacks).write(MaybeUninit::uninit());
         (&raw mut (*ptr).peripherals).write(peripherals);
         // G8TOR_RTOS is now fully initialized
+        // Except running which will be set when launching
 
         // Return a mutable reference to the static instance
         // To enable user code to add threads
@@ -152,69 +175,168 @@ impl G8torRtos {
 
     /// Add a thread to the RTOS
     /// Safety: This function should only be called, at the start of the program BEFORE launch
-    pub unsafe fn add_thread(&mut self, thread: extern "C" fn() -> !) -> Result<(), ()> {
+    pub fn add_thread(&mut self, name: &str, thread: extern "C" fn() -> !) -> Result<(), ()> {
+        if name.len() > 8 {
+            return Err(()); // Name too long
+        }
+
         // Find an empty TCB slot
         let _self_ptr = self as *mut Self;
         for id in 0..MAX_THREADS {
             if self.threads[id].is_none() {
                 // Initialize the stack for the new thread
                 // This is okay because self.stacks is a MaybeUninit and we only write to it here
-                let stack = self.stacks.as_mut_ptr().cast::<[u32; STACK_SIZE]>().add(id);
-                let sp = stack.cast::<u32>().add(STACK_SIZE);
+                let stack = self.stacks.as_mut_ptr().cast::<[u32; STACK_SIZE]>();
+                let stack = unsafe { stack.add(id) }; // SAFETY: id < MAX_THREADS so this is in bounds
+                let sp = unsafe { stack.cast::<u32>().add(STACK_SIZE) }; // SAFETY: stack is valid and STACK_SIZE is in bounds
 
                 // Reserve const space for the initial stack frame
-                let sp = sp.sub(16);
+                let sp = unsafe { sp.sub(16) }; // SAFETY: STACK_SIZE must be > 64 bytes
 
                 // Set up initial stack frame
-                sp.add(15).write(0x01000000); // xPSR
-                sp.add(14).write(thread as u32); // PC
-                sp.add(13).write(0x14141414); // R14 (LR)
-                sp.add(12).write(0x12121212); // R12
-                sp.add(11).write(0x03030303); // R3
-                sp.add(10).write(0x02020202); // R2
-                sp.add(9).write(0x01010101); // R1
-                sp.add(8).write(0x00000000); // R0
-                sp.add(7).write(0x11111111); // R11
-                sp.add(6).write(0x10101010); // R10
-                sp.add(5).write(0x09090909); // R9
-                sp.add(4).write(0x08080808); // R8
-                sp.add(3).write(0x07070707); // R7
-                sp.add(2).write(0x06060606); // R6
-                sp.add(1).write(0x05050505); // R5
-                sp.add(0).write(0x04040404); // R4
+                // SAFETY: We just reserved space for 16 u32s and sp is valid
+                unsafe {
+                    sp.add(15).write(0x01000000); // xPSR
+                    sp.add(14).write(thread as u32); // PC
+                    sp.add(13).write(0x14141414); // R14 (LR)
+                    sp.add(12).write(0x12121212); // R12
+                    sp.add(11).write(0x03030303); // R3
+                    sp.add(10).write(0x02020202); // R2
+                    sp.add(9).write(0x01010101); // R1
+                    sp.add(8).write(0x00000000); // R0
+                    sp.add(7).write(0x11111111); // R11
+                    sp.add(6).write(0x10101010); // R10
+                    sp.add(5).write(0x09090909); // R9
+                    sp.add(4).write(0x08080808); // R8
+                    sp.add(3).write(0x07070707); // R7
+                    sp.add(2).write(0x06060606); // R6
+                    sp.add(1).write(0x05050505); // R5
+                    sp.add(0).write(0x04040404); // R4
+                }
 
                 // Create the new TCB and link it into the circular doubly linked list
                 let thread = self.threads[id].insert(TCB {
-                    sp: NonNull::new_unchecked(sp as *mut u32),
                     id: id as u32,
+                    sp: NonNull::new(sp as *mut u32)
+                        .expect("Obviously sp is not null because we just wrote to it."),
                     next: NonNull::dangling(),
                     prev: NonNull::dangling(),
+                    priority: 0,
+                    blocked_by: None,
+                    sleep_until: 0,
+                    name: name.as_bytes().try_into().unwrap(),
                 });
 
-                if id != 0 {
-                    // Not the first thread, link it to the previous thread and the first thread
-                    thread.next =
-                        NonNull::new_unchecked((*_self_ptr).threads[0].as_mut().unwrap_unchecked());
-                    // SAFETY: We just checked that i > 0 also id = i implies that threads[k] is Some for k < i
-                    // so k = 0 is definitely Some and k = i-1 is definitely Some
-                    thread.prev = NonNull::new_unchecked(
-                        (*_self_ptr).threads[id - 1].as_mut().unwrap_unchecked(),
-                    );
+                if id > 0 {
+                    thread.next = unsafe {
+                        NonNull::new_unchecked((*_self_ptr).threads[0].as_mut().unwrap_unchecked())
+                    }; // SAFETY: NUM_THREADS > 0 and id = i implies that threads[k] is Some for k < i
+                       // so k = 0 is definitely Some
+                    thread.prev = unsafe {
+                        NonNull::new_unchecked(
+                            (*_self_ptr).threads[id - 1].as_mut().unwrap_unchecked(),
+                        )
+                    }; // SAFETY: We just checked that i > 0 also id = i implies that threads[k] is Some for k < i
+                       // so k = i-1 is definitely Some
+
                     // Update the previous TCB's next pointer to point to the new TCB
-                    self.threads[id - 1].as_mut().unwrap_unchecked().next =
-                        NonNull::new_unchecked(thread as *mut TCB);
+                    unsafe {
+                        self.threads[id - 1].as_mut().unwrap_unchecked().next =
+                            NonNull::new_unchecked(thread as *mut TCB)
+                    }; // SAFETY: We just checked that i > 0 also id = i implies that threads[k] is Some for k < i
                 } else {
                     // First thread, points to itself
-                    // SAFETY: We just checked that i > 0 also id = i implies that threads[k] is Some for k < i
-                    // so k = 0 is definitely Some
-                    thread.next = NonNull::new_unchecked(thread as *mut TCB);
-                    thread.prev = NonNull::new_unchecked(thread as *mut TCB);
+                    // SAFETY: We just initialized thread so it is definitely Some
+                    thread.next = unsafe { NonNull::new_unchecked(thread as *mut TCB) };
+                    thread.prev = unsafe { NonNull::new_unchecked(thread as *mut TCB) };
                 }
 
                 return Ok(());
             }
         }
         return Err(()); // No empty slot found
+    }
+
+    pub fn init_semaphore(
+        &mut self,
+        initial_count: u8,
+        max_count: u8,
+    ) -> Result<G8torSemaphoreHandle, ()> {
+        for index in 0..NUM_ATOMICS {
+            if (self.atomic_mask & (1 << index)) == 0 {
+                // Found an empty atomic slot
+                self.atomic_mask |= 1 << index;
+                self.atomics[index].count = ManuallyDrop::new(AtomicU8::new(initial_count));
+                return Ok(G8torSemaphoreHandle {
+                    index: NonZeroU8::new((index + 1) as u8).unwrap(),
+                    max_count,
+                });
+            }
+        }
+
+        Err(())
+    }
+
+    pub fn signal_semaphore(&self, handle: G8torSemaphoreHandle) {
+        let index = (handle.index.get() - 1) as usize;
+        let atomic = &self.atomics[index];
+
+        // Increment the count atomically
+        let count = unsafe { &atomic.count }; // SAFETY: Because the SemaphoreHandle was obtained from init_semaphore, we know that this atomic is a count
+
+        let res = count.fetch_update(
+            core::sync::atomic::Ordering::SeqCst,
+            core::sync::atomic::Ordering::SeqCst,
+            |current| {
+                if current < handle.max_count {
+                    Some(current + 1)
+                } else {
+                    None
+                }
+            },
+        );
+
+        match res {
+            Ok(0) => {
+                // There was possibly a thread blocked on this semaphore
+                // Wake up one blocked thread
+                for tcb_opt in self.threads.iter() {
+                    if let Some(tcb) = tcb_opt {
+                        if let Some(blocking_atomic) = tcb.blocked_by {
+                            if blocking_atomic.index == handle.index {
+                                // Unblock this thread
+                                unsafe {
+                                    let tcb_mut =
+                                        &mut *(tcb as *const TCB as *mut TCB); // SAFETY: We have exclusive access to the RTOS and thus to all TCBs
+                                    tcb_mut.blocked_by = None;
+                                }
+                                break; // Only unblock one thread
+                            }
+                        }
+                    }
+                }
+            },
+            Ok(_) => {},
+            Err(_) => {
+                // Semaphore was already at max count so block the current thread and yield
+                let current_tcb = unsafe { self.running.as_mut() }; // SAFETY: We
+            },
+        }
+    }
+
+    pub fn init_mutex(&mut self) -> Result<G8torMutexHandle, ()> {
+        for index in 0..NUM_ATOMICS {
+            if (self.atomic_mask & (1 << index)) == 0 {
+                // Found an empty atomic slot
+                self.atomic_mask |= 1 << index;
+                self.atomics[index].mutex = ManuallyDrop::new(AtomicBool::new(true));
+                return Ok(G8torMutexHandle {
+                    index: NonZeroU8::new((index + 1) as u8).unwrap(),
+                });
+            }
+        }
+
+        Err(())
     }
 
     pub unsafe fn launch(&mut self) -> ! {
@@ -254,11 +376,5 @@ impl G8torRtos {
             sp = in(reg) self.running.as_ptr(),
             options(noreturn)
         )
-    }
-
-    pub fn register_semaphore(&mut self, initial_count: u32) -> &Semaphore {
-        self.semaphores.iter_mut().find(|s| s.is_none()).expect("No free semaphores").get_or_insert(Semaphore {
-            count: AtomicU32::new(initial_count),
-        })
     }
 }
