@@ -2,7 +2,7 @@
 #![no_main]
 #![allow(static_mut_refs)]
 
-use eel4745c::rtos;
+use eel4745c::rtos::{self, G8torRtosHandle};
 use embedded_hal::digital::OutputPin;
 use panic_halt as _;
 
@@ -13,25 +13,25 @@ use cortex_m_rt::entry;
 static mut R_LED_S: Option<PF1<Output<PushPull>>> = None;
 static mut B_LED_S: Option<PF2<Output<PushPull>>> = None;
 
-extern "C" fn blink_red() -> ! {
+extern "C" fn blink_red(rtos: G8torRtosHandle) -> ! {
     let mut r_led = unsafe { R_LED_S.take() }.expect("Red LED is initialized.");
-    let mut state = false;
 
     loop {
-        r_led.set_state(state.into()).unwrap();
-        state = !state;
-        cortex_m::asm::delay(500_000_000 / 12);
+        r_led.set_state(embedded_hal::digital::PinState::Low).unwrap();
+        rtos.yield_now();
+        r_led.set_state(embedded_hal::digital::PinState::High).unwrap();
+        rtos.yield_now();
     }
 }
 
-extern "C" fn blink_blue() -> ! {
+extern "C" fn blink_blue(rtos: G8torRtosHandle) -> ! {
     let mut b_led = unsafe { B_LED_S.take() }.expect("Blue LED is initialized.");
-    let mut state = false;
 
     loop {
-        b_led.set_state(state.into()).unwrap();
-        state = !state;
-        cortex_m::asm::delay(1000_000_000 / 12);
+        b_led.set_state(embedded_hal::digital::PinState::Low).unwrap();
+        cortex_m::asm::delay(8_000_000);
+        b_led.set_state(embedded_hal::digital::PinState::High).unwrap();
+        cortex_m::asm::delay(8_000_000);
     }
 }
 

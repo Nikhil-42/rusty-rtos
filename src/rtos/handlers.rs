@@ -1,4 +1,4 @@
-use core::arch::naked_asm;
+use core::arch::{asm, naked_asm};
 
 use cortex_m_rt::{exception, ExceptionFrame};
 
@@ -6,11 +6,12 @@ use crate::rtos::{G8TOR_RTOS, _scheduler, _syscall};
 
 
 #[exception]
-unsafe fn HardFault(_ef: &ExceptionFrame) -> ! {
-    let _hfsr = (*cortex_m::peripheral::SCB::PTR).hfsr.read();
-    let _cfsr = (*cortex_m::peripheral::SCB::PTR).cfsr.read();
+unsafe fn HardFault(ef: &ExceptionFrame) -> ! {
+    let hfsr = (*cortex_m::peripheral::SCB::PTR).hfsr.read();
+    let cfsr = (*cortex_m::peripheral::SCB::PTR).cfsr.read();
 
-    cortex_m::asm::nop();
+    core::hint::black_box((hfsr, cfsr, ef));
+    asm!("bkpt #0");
     loop {}
 }
 
@@ -45,14 +46,23 @@ unsafe extern "C" fn SysTick() {
 unsafe extern "C" fn PendSV() {
     naked_asm!(
         "cpsid i",              // Begin critical section
+        // check if there is a running thread
+
+
         "push {{r4-r11}}",      // Save callee-saved registers (for the current thread)
         "ldr r0, ={G8TOR_RTOS}",  // G8torRtos* r0 = &G8TOR_RTOS
         "ldr r1, [r0, #0]",     // TCB* r1 = G8TOR_RTOS.running
         "str sp, [r1, #4]",     // u32* r1->sp = sp
         "push {{r0, lr}}",      // Save G8torRtos* r0 on stack (and lr for alignment)
-        "bl {SCHEDULER}",       // Call scheduler (r0 = *G8torRtos)
+        "bl {SCHEDULER}",       // Call scheduler(r0 = *G8torRtos) => returns TCB* in r0
+        "mov r1, r0",           // TCB* r1 = return value from scheduler
         "pop {{r0, lr}}",       // Restore G8torRtos* r0 from stack (and lr for alignment)
-        "ldr r1, [r0, #0]",     // TCB* r1 = G8TOR_RTOS.running
+        // r1 may be null if no thread is ready to run
+        // In that case, do not pop the 
+
+
+
+        "str r1, [r0, #0]",     // G8TOR_RTOS.running = r1
         "ldr sp, [r1, #4]",     // u32* sp = r1->sp
         "pop {{r4-r11}}",       // Restore callee-saved registers (for the new thread)
         "cpsie i",              // Enable interrupts (guarantees the next instruction is not interrupted)
@@ -67,23 +77,27 @@ macro_rules! syscall {
     ($imm:expr $(; $($arg:expr),* )? ) => {{
         #[allow(unused_macros)]
         macro_rules! call {
-            () => { unsafe { _syscall0::<$imm>() } };
-            ($r0:expr) => { unsafe { _syscall1::<$imm>($r0) } };
-            ($r0:expr, $r1:expr) => { unsafe { _syscall2::<$imm>($r0, $r1) } };
-            ($r0:expr, $r1:expr, $r2:expr) => { unsafe { _syscall3::<$imm>($r0, $r1, $r2) } };
-            ($r0:expr, $r1:expr, $r2:expr, $r3:expr) => { unsafe { _syscall4::<$imm>($r0, $r1, $r2, $r3) } };
+            () => { crate::rtos::handlers::_syscall0::<$imm>() };
+            ($r0:expr) => { crate::rtos::handlers::_syscall1::<$imm>($r0) };
+            ($r0:expr, $r1:expr) => { crate::rtos::handlers::_syscall2::<$imm>($r0, $r1)  };
+            ($r0:expr, $r1:expr, $r2:expr) => { crate::rtos::handlers::_syscall3::<$imm>($r0, $r1, $r2)  };
+            ($r0:expr, $r1:expr, $r2:expr, $r3:expr) => { crate::rtos::handlers::_syscall4::<$imm>($r0, $r1, $r2, $r3)  };
         }
         call!($($($arg),*)?)
     }};
 }
 
 #[repr(C)]
-pub struct SyscallReturn(usize, usize);
+pub(super) struct SyscallReturn(pub(super) usize, pub(super) usize);
 macro_rules! gen_syscall {
     ($name:ident; $($rX:ident),*) => {
         #[unsafe(naked)]
-        extern "C" fn $name<const num: u8>($($rX: usize),*) -> SyscallReturn {
-            naked_asm!("svc {num}", num = const num);
+        pub(super) extern "C" fn $name<const NUM: u8>($($rX: usize),*) -> usize {
+            naked_asm!(
+                "svc {num}",
+                "nop",
+                num = const NUM
+            );
         }
     };
 }
@@ -104,8 +118,9 @@ unsafe extern "C" fn SVCall() {
         "tst lr, #4",           // Check if bit 2 is set (to determine which stack)
         "ite eq",               // Mini-branch 
         "mrseq r4, msp",        // If MSP, load MSP into r4
-        "mrsne   r4, psp",      // If PSP, load PSP into r4
-        // r0 now contains the interrupted stack pointer
+        "mrsne r4, psp",        // If PSP, load PSP into r4
+        // r4 now contains the interrupted stack pointer
+        "add r4, r4, #8",       // Point to the stacked frame
         "ldr r1, [r4, #24]",    // Load the old PC into r1
         "ldrb r1, [r1, #-2]",   // Load the imm byte from instruction memory
         // r1 now contains the immediate value
@@ -119,7 +134,8 @@ unsafe extern "C" fn SVCall() {
         "bl {SYSCALL}",
         // r0 and r1 contain return value
         "str r0, [r4, #0]",     // Overwrite stacked frame with return
-        "str r1, [r4, #4]",
+        // "str r1, [r4, #4]",
+        "add sp, sp, #8",       // Clean up syscall args
         "pop {{r4, lr}}",
         "bx lr",                // Return from SVC
         SYSCALL = sym _syscall

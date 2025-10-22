@@ -4,32 +4,38 @@ mod handlers;
 use crate::rtos::atomics::{
     G8torAtomic, G8torAtomicHandle, G8torMutexHandle, G8torSemaphoreHandle,
 };
+use crate::rtos::handlers::SyscallReturn;
+use crate::syscall;
 
-use core::convert::TryInto as _;
+use core::cell::UnsafeCell;
+use core::marker::PhantomData;
 use core::mem::{ManuallyDrop, MaybeUninit};
-use core::sync::atomic::AtomicBool;
+use core::num::NonZeroU8;
+use core::sync::{atomic::AtomicBool};
 use core::{arch::asm, ptr::NonNull};
 
 use cortex_m::peripheral::scb::SystemHandler;
 use cortex_m::peripheral::syst::SystClkSource;
-
-pub use crate::rtos::handlers::SyscallReturn;
+use tm4c123x_hal::pac::adc0::dccmp3::W;
 
 const MAX_THREADS: usize = 6;
 const STACK_SIZE: usize = 512; // 2KB stack
 const NUM_ATOMICS: usize = 8;
 const NAME_LEN: usize = 16;
+const PERIOD_US: u32 = 1_000_000; // SysTick period in microseconds
+const TICKS_PER_US: u32 = 16; // Assuming the 16 MHz core clock
 
 // SAFETY: It is never safe to have any references to this static while the RTOS is running because system_time is volatile
 static mut G8TOR_RTOS: MaybeUninit<G8torRtos> = MaybeUninit::uninit();
 
 #[repr(C)]
 struct TCB {
-    pub id: u32,
+    pub id: usize,
     pub sp: NonNull<u32>, // Stack pointer (points to top of stack)
     pub next: NonNull<TCB>,
     pub prev: NonNull<TCB>,
     pub sleep_until: u32,
+    pub asleep: bool,
     pub priority: u8,
     pub blocked_by: Option<G8torAtomicHandle>, // A handle to the blocking atomic (if any)
     pub name: [u8; NAME_LEN],
@@ -37,7 +43,7 @@ struct TCB {
 
 #[repr(C)]
 pub struct G8torRtos {
-    running: NonNull<TCB>,
+    running: Option<NonNull<TCB>>,
     system_time: u32,
     threads: [Option<TCB>; MAX_THREADS],
     atomics: [G8torAtomic; NUM_ATOMICS],
@@ -46,14 +52,85 @@ pub struct G8torRtos {
     peripherals: cortex_m::Peripherals,
 }
 
-// Executes in critical section
-unsafe extern "C" fn _scheduler(rtos: *mut G8torRtos) {
-    // Context switch logic
-    (*rtos).running = (*rtos).running.read().next;
+// Executes in critical section so we have exclusive access to G8TOR_RTOS
+unsafe extern "C" fn _scheduler(rtos: &mut G8torRtos) -> Option<NonNull<TCB>> {
+    let mut next_thread = if let Some(running) = rtos.running.as_mut() {
+        // If there's a running thread, start searching from its next thread
+        running.as_mut().next.as_mut()
+    } else {
+        // No running thread, start from the first living thread
+        let mut next_thread = None;
+        for t in rtos.threads.iter_mut() {
+            if let Some(tcb) = t.as_mut() {
+                next_thread = Some(tcb);
+                break;
+            }
+        }
+        next_thread?
+    };
+
+    let start = next_thread.prev.as_ref().id;  // To detect when we've looped through all threads
+    let mut searching = true;
+    while searching {
+        if next_thread.id == start {
+            // We have looped through all threads if we can't 
+            // run this one then there are no runnable threads
+            searching = false;
+        }
+
+        if next_thread.asleep {
+            // Check if the deadline has passed
+            let current_time = rtos.system_time;
+            if next_thread.sleep_until.wrapping_sub(current_time) as i32 <= 0 {
+                // Wake up the thread
+                next_thread.asleep = false;
+            } else {
+                // Move to the next thread
+                next_thread = next_thread.next.as_mut();
+                continue;
+            }
+        }
+        // next_thread is not asleep
+
+        if next_thread.blocked_by.is_some() {
+            // Thread is blocked on an atomic, move to the next thread
+            next_thread = next_thread.next.as_mut();
+            continue;
+        }
+        // next_thread is not blocked
+
+        return Some(NonNull::new_unchecked(next_thread as *mut TCB));
+    };
+    
+    // No thread is ready to run, return None
+    None
 }
 
-unsafe extern "C" fn _syscall() {
+unsafe extern "C" fn _syscall(r0: usize, r1: usize, r2: usize, r3: usize, imm: u8) -> usize {
+    match imm {
+        0 => {
+            // Pend a context switch 
+            cortex_m::peripheral::SCB::set_pendsv();
 
+            if r0 > 0 {
+                // Sleep syscall
+                let rtos = &raw const G8TOR_RTOS as *const G8torRtos;
+                let system_time = &raw const (*rtos).system_time;
+                let sleep_time = r0 as u32;
+                let current_time = core::ptr::read_volatile(system_time);
+                let wake_time = current_time.wrapping_add(sleep_time);
+
+                // SAFTEY: This is safe because PendSV will not run until after we exit the syscall
+                // so the running thread cannot change while we are in this function
+                let running_tcb = (*rtos).running.unwrap_unchecked().as_ptr();
+                (*running_tcb).asleep = true;
+                (*running_tcb).sleep_until = wake_time;
+            }
+
+            0
+        },
+        _ => 0, // Unknown syscall
+    }
 }
 
 impl G8torRtos {
@@ -66,7 +143,7 @@ impl G8torRtos {
         // We are in a single-threaded context (no interrupts)
         // so this is the only access to G8TOR_RTOS
         let ptr = G8TOR_RTOS.as_mut_ptr();
-        (&raw mut (*ptr).running).write(core::ptr::NonNull::dangling());
+        (&raw mut (*ptr).running).write(None);
         (&raw mut (*ptr).system_time).write(0);
         (&raw mut (*ptr).threads).write([const { None }; MAX_THREADS]);
         (&raw mut (*ptr).atomics).write([const { G8torAtomic::new_semaphore(0u8) }; NUM_ATOMICS]);
@@ -82,7 +159,7 @@ impl G8torRtos {
 
     /// Add a thread to the RTOS
     /// Safety: This function should only be called, at the start of the program BEFORE launch
-    pub fn add_thread(&mut self, name: &[u8; NAME_LEN], thread: extern "C" fn() -> !) -> Result<(), ()> {
+    pub fn add_thread(&mut self, name: &[u8; NAME_LEN], thread: extern "C" fn(G8torRtosHandle) -> !) -> Result<(), ()> {
         // Find an empty TCB slot
         let _self_ptr = self as *mut Self;
         for id in 0..MAX_THREADS {
@@ -106,7 +183,7 @@ impl G8torRtos {
                     sp.add(11).write(0x03030303); // R3
                     sp.add(10).write(0x02020202); // R2
                     sp.add(9).write(0x01010101); // R1
-                    sp.add(8).write(0x00000000); // R0
+                    sp.add(8).write(id as u32); // R0
                     sp.add(7).write(0x11111111); // R11
                     sp.add(6).write(0x10101010); // R10
                     sp.add(5).write(0x09090909); // R9
@@ -119,14 +196,15 @@ impl G8torRtos {
 
                 // Create the new TCB and link it into the circular doubly linked list
                 let thread = self.threads[id].insert(TCB {
-                    id: id as u32,
+                    id: id,
                     sp: NonNull::new(sp as *mut u32)
                         .expect("Obviously sp is not null because we just wrote to it."),
                     next: NonNull::dangling(),
                     prev: NonNull::dangling(),
+                    sleep_until: 0,
+                    asleep: false,
                     priority: 0,
                     blocked_by: None,
-                    sleep_until: 0,
                     name: *name,
                 });
 
@@ -163,45 +241,34 @@ impl G8torRtos {
     pub fn init_semaphore(
         &mut self,
         initial_count: u8,
+        max_count: u8,
     ) -> Result<G8torSemaphoreHandle, ()> {
         for index in 0..NUM_ATOMICS {
             if (self.atomic_mask & (1 << index)) == 0 {
                 // Found an empty atomic slot
                 self.atomic_mask |= 1 << index;
-                self.atomics[index] = G8torAtomic::new_semaphore(initial_count);
-                return Ok(index.into());
+                self.atomics[index] = G8torAtomic::new_semaphore(initial_count.min(max_count));
+                // SAFETY: index < NUM_ATOMICS < 256 so index + 1 < 256 so this is a valid NonZeroU8
+                return Ok(G8torSemaphoreHandle { index: unsafe { NonZeroU8::new_unchecked((index + 1) as u8) }, max_count });
             }
         }
 
+        // No empty atomic slot found
         Err(())
     }
 
-    pub fn signal_semaphore(&self, handle: G8torSemaphoreHandle) {
-        let index: usize = handle.into();
-        let count = unsafe { &self.atomics[index].count };
-
-        // Critical section requires supervisor mode
-        // Start critical section
-        let res = count.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-
-        if res == 0 {
-            // Unblock a thread waiting on this semaphore
-            // Requires critical section
-        }
-
-        // End critical section
-    }
-
-    pub fn init_mutex(&mut self) -> Result<G8torMutexHandle, ()> {
+    pub fn init_mutex<'a, T>(&mut self, resource: &'a mut UnsafeCell<T>) -> Result<G8torMutexHandle<'a, T>, ()> {
         for index in 0..NUM_ATOMICS {
             if (self.atomic_mask & (1 << index)) == 0 {
                 // Found an empty atomic slot
                 self.atomic_mask |= 1 << index;
                 self.atomics[index].mutex = ManuallyDrop::new(AtomicBool::new(true));
-                return Ok(index.into());
+                // SAFETY: index < NUM_ATOMICS < 256 so index + 1 < 256 so this is a valid NonZeroU8
+                return Ok(G8torMutexHandle { index: unsafe { NonZeroU8::new_unchecked((index + 1) as u8) }, resource: resource });
             }
         }
 
+        // No empty atomic slot found
         Err(())
     }
 
@@ -210,7 +277,7 @@ impl G8torRtos {
 
         // Set the currently running thread to the first thread added
         self.running = match (*_self_ptr).threads[0].as_mut() {
-            Some(tcb) => NonNull::new_unchecked(tcb as *mut TCB),
+            Some(tcb) => Some(NonNull::new_unchecked(tcb as *mut TCB)),
             None => panic!("No threads to run!"),
         };
 
@@ -220,8 +287,9 @@ impl G8torRtos {
         syst.disable_counter();
 
         syst.clear_current();
-        syst.set_clock_source(SystClkSource::Core);
-        syst.set_reload(cortex_m::peripheral::SYST::get_ticks_per_10ms() / 10 - 1); // 1 ms
+        syst.set_clock_source(SystClkSource::Core);  // External maps to the PIOSC / 4 (4 MHz)
+                                                                // Core maps to the system clock (16 MHz in our case)
+        syst.set_reload(PERIOD_US * TICKS_PER_US - 1); // 1 ms
         unsafe {
             scb.set_priority(SystemHandler::SysTick, 0); // Highest priority
             scb.set_priority(SystemHandler::PendSV, 0b11100000); // Lowest priority
@@ -239,8 +307,25 @@ impl G8torRtos {
             "add sp, sp, #4",         // Skip xPSR
             "cpsie i",                // Enable interrupts
             "bx lr",                  // Branch to the thread's PC
-            sp = in(reg) self.running.as_ptr(),
+            sp = in(reg) self.running.unwrap_unchecked().as_ptr(),
             options(noreturn)
         )
+    }
+}
+
+#[repr(C)]
+pub struct G8torRtosHandle {
+    id: usize,
+    _rtos: PhantomData<&'static G8torRtos>,
+}
+
+impl G8torRtosHandle {
+    pub fn yield_now(&self) {
+        // Sleep for 0 ticks to yield the CPU
+        syscall!(0; 0);
+    }
+
+    pub fn sleep_ms(&self, ms: usize) {
+        syscall!(0; ms);
     }
 }
