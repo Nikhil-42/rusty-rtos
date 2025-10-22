@@ -10,7 +10,7 @@
             "device": "TM4C123GH6PM",
             "servertype": "openocd",
             "cwd": "${workspaceFolder}",
-            "executable": "${workspaceFolder}/target/thumbv7em-none-eabihf/debug/lab3ab",
+            "executable": "${workspaceFolder}/target/thumbv7em-none-eabihf/debug/lab4a",
             "runToEntryPoint": "main",
             "configFiles": ["board/ti_ek-tm4c123gxl.cfg"],
             // "svdFile": "${workspaceFolder}/TM4C123.svd",
@@ -26,7 +26,7 @@
             "type": "lldb",
             "request": "attach",
             "preLaunchTask": "rust: cargo build",
-            "targetCreateCommands": ["target create ${workspaceFolder}/target/thumbv7em-none-eabihf/debug/lab3ab"],
+            "targetCreateCommands": ["target create ${workspaceFolder}/target/thumbv7em-none-eabihf/debug/lab4a"],
             "processCreateCommands": [
                 "gdb-remote localhost:3333",
                 // "monitor arm semihosting enable",

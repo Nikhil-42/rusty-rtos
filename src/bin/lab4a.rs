@@ -18,9 +18,9 @@ extern "C" fn blink_red(rtos: G8torRtosHandle) -> ! {
 
     loop {
         r_led.set_state(embedded_hal::digital::PinState::Low).unwrap();
-        rtos.yield_now();
+        rtos.sleep_ms(10);
         r_led.set_state(embedded_hal::digital::PinState::High).unwrap();
-        rtos.yield_now();
+        rtos.sleep_ms(10);
     }
 }
 
