@@ -87,8 +87,6 @@ macro_rules! syscall {
     }};
 }
 
-#[repr(C)]
-pub(super) struct SyscallReturn(pub(super) usize, pub(super) usize);
 macro_rules! gen_syscall {
     ($name:ident; $($rX:ident),*) => {
         #[unsafe(naked)]
