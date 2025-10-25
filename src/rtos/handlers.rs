@@ -46,26 +46,36 @@ unsafe extern "C" fn PendSV() {
     naked_asm!(
         "cpsid i",              // Begin critical section
         // check if there is a running thread
-
-
-        "push {{r4-r11}}",      // Save callee-saved registers (for the current thread)
         "ldr r0, ={G8TOR_RTOS}",  // G8torRtos* r0 = &G8TOR_RTOS
         "ldr r1, [r0, #0]",     // TCB* r1 = G8TOR_RTOS.running
+        "cbz r1, 1f",           // if (r1 == null) don't save context
+        // G8TOR_RTOS.running is not null, save its context
+        "push {{r4-r11}}",      // Save callee-saved registers (for the current thread)
         "str sp, [r1, #4]",     // u32* r1->sp = sp
+        // Call scheduler to select the next thread to run
+        "1:",
         "push {{r0, lr}}",      // Save G8torRtos* r0 on stack (and lr for alignment)
         "bl {SCHEDULER}",       // Call scheduler(r0 = *G8torRtos) => returns TCB* in r0
         "mov r1, r0",           // TCB* r1 = return value from scheduler
         "pop {{r0, lr}}",       // Restore G8torRtos* r0 from stack (and lr for alignment)
-        // r1 may be null if no thread is ready to run
-        // In that case, do not pop the
-
-
-
         "str r1, [r0, #0]",     // G8TOR_RTOS.running = r1
+
+        // r1 may be null if no thread is ready to run
+        "cbz r1, 1f",           // if (r1 == null) branch to idle
+        // There is a thread to run, restore its context
         "ldr sp, [r1, #4]",     // u32* sp = r1->sp
         "pop {{r4-r11}}",       // Restore callee-saved registers (for the new thread)
         "cpsie i",              // Enable interrupts (guarantees the next instruction is not interrupted)
         "bx lr",                // Branch to the new thread's PC (in lr) and restore caller-saved registers
+
+        // No thread to run, enter low-power idle state
+        "1:",
+        "ldr r0, =0xE000ED10",  // SCB->SYSCTRL
+        "ldr r1, =0x00000002",  // Set SLEEPEXIT bit
+        "str r1, [r0]",         // SCB->SYSCTRL = SLEEPEXIT
+        "cpsie i",              // Enable interrupts
+        "bx lr",                // Return from PendSV
+
         G8TOR_RTOS = sym G8TOR_RTOS,
         SCHEDULER = sym _scheduler
     );
@@ -93,6 +103,7 @@ macro_rules! gen_syscall {
             naked_asm!(
                 "svc {num}",
                 "nop",
+                "bx lr",
                 num = const NUM
             );
         }

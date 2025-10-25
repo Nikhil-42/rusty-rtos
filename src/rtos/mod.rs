@@ -96,7 +96,7 @@ unsafe extern "C" fn _scheduler(rtos: &mut G8torRtos) -> Option<NonNull<TCB>> {
         }
         // next_thread is not blocked
 
-        return Some(NonNull::new_unchecked(next_thread as *mut TCB));
+        return Some(NonNull::new_unchecked(next_thread));
     }
 
     // No thread is ready to run, return None
@@ -463,9 +463,10 @@ impl G8torRtosHandle {
 
     pub fn release_mutex<T>(&self, handle: &G8torMutexHandle<T>, lock: G8torMutexLock<T>) {
         if core::ptr::addr_eq(handle.mutex, lock.mutex) {
+            syscall!(2; handle.index as usize, u8::MAX as usize); // Never block on release mutex
+        }
+        else {
             panic!("Attempted to release a mutex with a lock from a different mutex!");
         }
-
-        let _ = syscall!(2; handle.index as usize, u8::MAX as usize); // Never block on release mutex
     }
 }
