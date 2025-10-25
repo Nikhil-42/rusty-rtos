@@ -1,6 +1,5 @@
 use core::{cell::UnsafeCell, mem::MaybeUninit, num::NonZeroU8, u8};
 
-
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) struct G8torAtomicHandle {
     pub(super) indexp1: NonZeroU8,
@@ -9,7 +8,9 @@ pub(super) struct G8torAtomicHandle {
 impl G8torAtomicHandle {
     #[inline(always)]
     pub const fn from_index(index: u8) -> Self {
-        G8torAtomicHandle { indexp1: NonZeroU8::new(index + 1).unwrap() }
+        G8torAtomicHandle {
+            indexp1: NonZeroU8::new(index + 1).unwrap(),
+        }
     }
 }
 
@@ -63,8 +64,7 @@ pub struct G8torMutex<T> {
 }
 
 impl<T> G8torMutex<T> {
-    pub const fn empty() -> Self
-    {
+    pub const fn empty() -> Self {
         G8torMutex {
             resource: UnsafeCell::new(MaybeUninit::uninit()),
         }
@@ -80,11 +80,8 @@ impl<T> G8torMutex<T> {
     pub fn get(&'static self, lock: G8torMutexLock<T>) -> &'static mut T {
         if core::ptr::eq(self, lock.mutex) {
             // SAFETY: The lock guarantees exclusive access to the resource.
-            unsafe {
-                (*self.resource.get()).assume_init_mut()
-            }
-        }
-        else {
+            unsafe { (*self.resource.get()).assume_init_mut() }
+        } else {
             panic!("Attempted to get a mutex resource with an invalid lock.");
         }
     }
@@ -94,8 +91,7 @@ impl<T> G8torMutex<T> {
         if core::ptr::eq(unsafe { (*self.resource.get()).as_ptr() }, resource) {
             // Resource released successfully
             return G8torMutexLock { mutex: self };
-        }
-        else {
+        } else {
             panic!("Attempted to release a mutex with an invalid resource reference.");
         }
     }

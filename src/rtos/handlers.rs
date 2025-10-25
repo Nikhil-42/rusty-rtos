@@ -2,8 +2,7 @@ use core::arch::{asm, naked_asm};
 
 use cortex_m_rt::{exception, ExceptionFrame};
 
-use crate::rtos::{G8TOR_RTOS, _scheduler, _syscall};
-
+use crate::rtos::{_scheduler, _syscall, G8TOR_RTOS};
 
 #[exception]
 unsafe fn HardFault(ef: &ExceptionFrame) -> ! {
@@ -58,7 +57,7 @@ unsafe extern "C" fn PendSV() {
         "mov r1, r0",           // TCB* r1 = return value from scheduler
         "pop {{r0, lr}}",       // Restore G8torRtos* r0 from stack (and lr for alignment)
         // r1 may be null if no thread is ready to run
-        // In that case, do not pop the 
+        // In that case, do not pop the
 
 
 
@@ -114,7 +113,7 @@ unsafe extern "C" fn SVCall() {
     naked_asm!(
         "push {{r4, lr}}",
         "tst lr, #4",           // Check if bit 2 is set (to determine which stack)
-        "ite eq",               // Mini-branch 
+        "ite eq",               // Mini-branch
         "mrseq r4, msp",        // If MSP, load MSP into r4
         "mrsne r4, psp",        // If PSP, load PSP into r4
         // r4 now contains the interrupted stack pointer
@@ -123,8 +122,8 @@ unsafe extern "C" fn SVCall() {
         "ldrb r1, [r1, #-2]",   // Load the imm byte from instruction memory
         // r1 now contains the immediate value
         "sub sp, sp, #8",       // Args for the syscall
-        "str r1, [sp, #0]",     
-        "ldr r3, [r4, #12]",    
+        "str r1, [sp, #0]",
+        "ldr r3, [r4, #12]",
         "ldr r2, [r4, #8]",
         "ldr r1, [r4, #4]",
         "ldr r0, [r4, #0]",

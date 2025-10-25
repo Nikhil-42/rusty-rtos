@@ -1,11 +1,9 @@
 mod atomics;
 mod handlers;
 
-use crate::rtos::atomics::{
-    G8torAtomicHandle
-};
+use crate::rtos::atomics::G8torAtomicHandle;
 pub use crate::rtos::atomics::{
-    G8torMutexHandle, G8torMutexLock, G8torSemaphoreHandle, G8torMutex
+    G8torMutex, G8torMutexHandle, G8torMutexLock, G8torSemaphoreHandle,
 };
 use crate::syscall;
 
@@ -68,11 +66,11 @@ unsafe extern "C" fn _scheduler(rtos: &mut G8torRtos) -> Option<NonNull<TCB>> {
         next_thread?
     };
 
-    let start = next_thread.prev.as_ref().id;  // To detect when we've looped through all threads
+    let start = next_thread.prev.as_ref().id; // To detect when we've looped through all threads
     let mut searching = true;
     while searching {
         if next_thread.id == start {
-            // We have looped through all threads if we can't 
+            // We have looped through all threads if we can't
             // run this one then there are no runnable threads
             searching = false;
         }
@@ -99,21 +97,22 @@ unsafe extern "C" fn _scheduler(rtos: &mut G8torRtos) -> Option<NonNull<TCB>> {
         // next_thread is not blocked
 
         return Some(NonNull::new_unchecked(next_thread as *mut TCB));
-    };
-    
+    }
+
     // No thread is ready to run, return None
     None
 }
 
 #[allow(unused_variables)]
 unsafe extern "C" fn _syscall(r0: usize, r1: usize, r2: usize, r3: usize, imm: u8) -> usize {
-    let rtos = &raw mut G8TOR_RTOS as *mut G8torRtos;  // SAFETY: the RTOS is definitely running
-    let running_tcb = (*rtos).running.unwrap_unchecked().as_ptr();  // SAFETY: something called this function
-    match imm { 
-        0 => { // Sleep 
+    let rtos = &raw mut G8TOR_RTOS as *mut G8torRtos; // SAFETY: the RTOS is definitely running
+    let running_tcb = (*rtos).running.unwrap_unchecked().as_ptr(); // SAFETY: something called this function
+    match imm {
+        0 => {
+            // Sleep
             let sleep_time = r0 as u32;
 
-            // Pend a context switch 
+            // Pend a context switch
             cortex_m::peripheral::SCB::set_pendsv();
 
             if r0 > 0 {
@@ -129,23 +128,29 @@ unsafe extern "C" fn _syscall(r0: usize, r1: usize, r2: usize, r3: usize, imm: u
             }
 
             0
-        },
-        1 => { // Wait Semaphore
+        }
+        1 => {
+            // Wait Semaphore
             let rtos = rtos as *mut G8torRtos;
             let sem_index = r0 as u8;
             let max_count = r1 as u8;
 
             cortex_m::interrupt::free(|_cs| {
-                let prev_count = (*rtos).atomics[sem_index as usize].fetch_update(core::sync::atomic::Ordering::SeqCst, core::sync::atomic::Ordering::SeqCst, |count| {
-                    if count > 0 {
-                        Some(count - 1)
-                    } else {
-                        None
-                    }
-                });
-                
+                let prev_count = (*rtos).atomics[sem_index as usize].fetch_update(
+                    core::sync::atomic::Ordering::SeqCst,
+                    core::sync::atomic::Ordering::SeqCst,
+                    |count| {
+                        if count > 0 {
+                            Some(count - 1)
+                        } else {
+                            None
+                        }
+                    },
+                );
+
                 (match prev_count {
-                    Ok(val) if val == max_count => { // Unblock blocked thread
+                    Ok(val) if val == max_count => {
+                        // Unblock blocked thread
                         let mut t = (*running_tcb).next.as_ptr();
                         while t != running_tcb {
                             if let Some(blocker) = (*t).blocked_by {
@@ -158,8 +163,9 @@ unsafe extern "C" fn _syscall(r0: usize, r1: usize, r2: usize, r3: usize, imm: u
                             t = (*t).next.as_ptr();
                         }
                         val
-                    },
-                    Err(val) => { // Block current thread
+                    }
+                    Err(val) => {
+                        // Block current thread
                         // Pend a context switch
                         cortex_m::peripheral::SCB::set_pendsv();
                         (*running_tcb).blocked_by = Some(G8torAtomicHandle::from_index(sem_index));
@@ -168,23 +174,29 @@ unsafe extern "C" fn _syscall(r0: usize, r1: usize, r2: usize, r3: usize, imm: u
                     Ok(val) => val,
                 }) as usize
             })
-        },
-        2 => { // Signal Semphore
+        }
+        2 => {
+            // Signal Semphore
             let rtos = rtos as *mut G8torRtos;
             let sem_index = r0 as u8;
             let max_count = r1 as u8;
 
             cortex_m::interrupt::free(|_cs| {
-                let prev_count = (*rtos).atomics[sem_index as usize].fetch_update(core::sync::atomic::Ordering::SeqCst, core::sync::atomic::Ordering::SeqCst, |count| {
-                    if count < max_count {
-                        Some(count + 1)
-                    } else {
-                        None
-                    }
-                });
-                
+                let prev_count = (*rtos).atomics[sem_index as usize].fetch_update(
+                    core::sync::atomic::Ordering::SeqCst,
+                    core::sync::atomic::Ordering::SeqCst,
+                    |count| {
+                        if count < max_count {
+                            Some(count + 1)
+                        } else {
+                            None
+                        }
+                    },
+                );
+
                 (match prev_count {
-                    Ok(val) if val == 0 => { // Unblock blocked thread
+                    Ok(val) if val == 0 => {
+                        // Unblock blocked thread
                         let mut t = (*running_tcb).next.as_ptr();
                         while t != running_tcb {
                             if let Some(blocker) = (*t).blocked_by {
@@ -197,8 +209,9 @@ unsafe extern "C" fn _syscall(r0: usize, r1: usize, r2: usize, r3: usize, imm: u
                             t = (*t).next.as_ptr();
                         }
                         val
-                    },
-                    Err(val) => { // Block current thread
+                    }
+                    Err(val) => {
+                        // Block current thread
                         // Pend a context switch
                         cortex_m::peripheral::SCB::set_pendsv();
                         (*running_tcb).blocked_by = Some(G8torAtomicHandle::from_index(sem_index));
@@ -239,7 +252,11 @@ impl G8torRtos {
 
     /// Add a thread to the RTOS
     /// Safety: This function should only be called, at the start of the program BEFORE launch
-    pub fn add_thread(&mut self, name: &[u8; NAME_LEN], thread: extern "C" fn(G8torRtosHandle) -> !) -> Result<(), ()> {
+    pub fn add_thread(
+        &mut self,
+        name: &[u8; NAME_LEN],
+        thread: extern "C" fn(G8torRtosHandle) -> !,
+    ) -> Result<(), ()> {
         // Find an empty TCB slot
         let _self_ptr = self as *mut Self;
         for id in 0..MAX_THREADS {
@@ -338,7 +355,10 @@ impl G8torRtos {
                 // Found an empty atomic slot
                 self.atomic_mask |= 1 << index;
                 self.atomics[index] = AtomicU8::new(initial_count.min(max_count));
-                return Ok(G8torSemaphoreHandle { index: index as u8, max_count });
+                return Ok(G8torSemaphoreHandle {
+                    index: index as u8,
+                    max_count,
+                });
             }
         }
 
@@ -346,13 +366,19 @@ impl G8torRtos {
         Err(())
     }
 
-    pub fn init_mutex<T>(&mut self, mutex: &'static G8torMutex<T>) -> Result<G8torMutexHandle<T>, ()> {
+    pub fn init_mutex<T>(
+        &mut self,
+        mutex: &'static G8torMutex<T>,
+    ) -> Result<G8torMutexHandle<T>, ()> {
         for index in 0..NUM_ATOMICS {
             if (self.atomic_mask & (1 << index)) == 0 {
                 // Found an empty atomic slot
                 self.atomic_mask |= 1 << index;
                 self.atomics[index] = AtomicU8::new(1); // Mutex is initially unlocked
-                return Ok(G8torMutexHandle { index: index as u8, mutex});
+                return Ok(G8torMutexHandle {
+                    index: index as u8,
+                    mutex,
+                });
             }
         }
 
@@ -375,8 +401,8 @@ impl G8torRtos {
         syst.disable_counter();
 
         syst.clear_current();
-        syst.set_clock_source(SystClkSource::Core);  // External maps to the PIOSC / 4 (4 MHz)
-                                                                // Core maps to the system clock (16 MHz in our case)
+        syst.set_clock_source(SystClkSource::Core); // External maps to the PIOSC / 4 (4 MHz)
+                                                    // Core maps to the system clock (16 MHz in our case)
         syst.set_reload(PERIOD_US * TICKS_PER_US - 1); // 1 ms
         unsafe {
             scb.set_priority(SystemHandler::SysTick, 0); // Highest priority
@@ -427,10 +453,12 @@ impl G8torRtosHandle {
 
     pub fn take_mutex<T>(&self, handle: &G8torMutexHandle<T>) -> G8torMutexLock<T> {
         // Functionally the same as wait_semaphore
-        syscall!(1; handle.index as usize, u8::MAX as usize);  // Never block on release mutex
+        syscall!(1; handle.index as usize, u8::MAX as usize); // Never block on release mutex
 
         // Successfully took the mutex
-        return G8torMutexLock { mutex: handle.mutex };
+        return G8torMutexLock {
+            mutex: handle.mutex,
+        };
     }
 
     pub fn release_mutex<T>(&self, handle: &G8torMutexHandle<T>, lock: G8torMutexLock<T>) {
@@ -438,6 +466,6 @@ impl G8torRtosHandle {
             panic!("Attempted to release a mutex with a lock from a different mutex!");
         }
 
-        let _ = syscall!(2; handle.index as usize, u8::MAX as usize);  // Never block on release mutex
+        let _ = syscall!(2; handle.index as usize, u8::MAX as usize); // Never block on release mutex
     }
 }
