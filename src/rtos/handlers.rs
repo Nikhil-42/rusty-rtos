@@ -9,7 +9,8 @@ unsafe fn HardFault(ef: &ExceptionFrame) -> ! {
     let hfsr = (*cortex_m::peripheral::SCB::PTR).hfsr.read();
     let cfsr = (*cortex_m::peripheral::SCB::PTR).cfsr.read();
 
-    core::hint::black_box((hfsr, cfsr, ef));
+    #[allow(unused_variables)]
+    let info = core::hint::black_box((hfsr, cfsr, ef));
     asm!("bkpt #0");
     loop {}
 }
@@ -50,8 +51,10 @@ unsafe extern "C" fn PendSV() {
         "ldr r1, [r0, #0]",     // TCB* r1 = G8TOR_RTOS.running
         "cbz r1, 1f",           // if (r1 == null) don't save context
         // G8TOR_RTOS.running is not null, save its context
-        "push {{r4-r11}}",      // Save callee-saved registers (for the current thread)
-        "str sp, [r1, #4]",     // u32* r1->sp = sp
+        "mrs r12, psp",         // Get process stack pointer
+        "stmdb r12!, {{r4-r11}}",      // Save callee-saved registers (for the current thread)
+        "str r12, [r1, #4]",     // u32* r1->sp = sp
+
         // Call scheduler to select the next thread to run
         "1:",
         "push {{r0, lr}}",      // Save G8torRtos* r0 on stack (and lr for alignment)
@@ -61,24 +64,46 @@ unsafe extern "C" fn PendSV() {
         "str r1, [r0, #0]",     // G8TOR_RTOS.running = r1
 
         // r1 may be null if no thread is ready to run
-        "cbz r1, 1f",           // if (r1 == null) branch to idle
+        "cmp r1, #0",           // Compare with null
+        "itte ne",             // if-then-then-then-else for next 4 instructions
         // There is a thread to run, restore its context
-        "ldr sp, [r1, #4]",     // u32* sp = r1->sp
-        "pop {{r4-r11}}",       // Restore callee-saved registers (for the new thread)
-        "cpsie i",              // Enable interrupts (guarantees the next instruction is not interrupted)
-        "bx lr",                // Branch to the new thread's PC (in lr) and restore caller-saved registers
-
+        "ldrne r12, [r1, #4]",     // u32* sp = r1->sp
+        "ldmne r12!, {{r4-r11}}",       // Restore callee-saved registers (for the new thread)
         // No thread to run, enter low-power idle state
-        "1:",
-        "ldr r0, =0xE000ED10",  // SCB->SYSCTRL
-        "ldr r1, =0x00000002",  // Set SLEEPEXIT bit
-        "str r1, [r0]",         // SCB->SYSCTRL = SLEEPEXIT
+        "ldreq r12, ={IDLE_FRAME}", // Load address of idle frame
+        "msr psp, r12",         // Set PSP to frame
         "cpsie i",              // Enable interrupts
         "bx lr",                // Return from PendSV
 
         G8TOR_RTOS = sym G8TOR_RTOS,
-        SCHEDULER = sym _scheduler
+        SCHEDULER = sym _scheduler,
+        IDLE_FRAME = sym IDLE_FRAME
     );
+}
+
+#[no_mangle]
+#[unsafe(naked)]
+unsafe extern "C" fn idle() {
+    naked_asm!(
+        "1:",
+        "wfi",                  // Wait for interrupt
+        "b 1b",                 // Repeat
+    )
+}
+static mut IDLE_FRAME: [u32; 8] = [
+ 0xFFFFFFFF, // R0 (id = -1)
+ 0x01010101, // R1
+ 0x02020202, // R2
+ 0x03030303, // R3
+ 0x12121212, // R12
+ 0x14141414, // R14 (LR)
+ 0x00000000, // PC -- will be filled in with idle()
+ 0x01000000, // xPSR
+]; // space for r4-r11, sp, lr
+pub fn init_idle() {
+    unsafe {
+        IDLE_FRAME[6] = idle as u32;
+    }
 }
 
 #[macro_export]
@@ -123,12 +148,8 @@ gen_syscall!(_syscall0;);
 unsafe extern "C" fn SVCall() {
     naked_asm!(
         "push {{r4, lr}}",
-        "tst lr, #4",           // Check if bit 2 is set (to determine which stack)
-        "ite eq",               // Mini-branch
-        "mrseq r4, msp",        // If MSP, load MSP into r4
-        "mrsne r4, psp",        // If PSP, load PSP into r4
+        "mrs r4, psp",        // load PSP into r4
         // r4 now contains the interrupted stack pointer
-        "add r4, r4, #8",       // Point to the stacked frame
         "ldr r1, [r4, #24]",    // Load the old PC into r1
         "ldrb r1, [r1, #-2]",   // Load the imm byte from instruction memory
         // r1 now contains the immediate value

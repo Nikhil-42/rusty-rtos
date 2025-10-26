@@ -5,6 +5,7 @@ use crate::rtos::atomics::G8torAtomicHandle;
 pub use crate::rtos::atomics::{
     G8torMutex, G8torMutexHandle, G8torMutexLock, G8torSemaphoreHandle,
 };
+use crate::rtos::handlers::init_idle;
 use crate::syscall;
 
 use core::marker::PhantomData;
@@ -389,6 +390,9 @@ impl G8torRtos {
     pub unsafe fn launch(&mut self) -> ! {
         let _self_ptr = self as *mut Self;
 
+        // Configure the idle thread jump address
+        init_idle();
+
         // Set the currently running thread to the first thread added
         self.running = match (*_self_ptr).threads[0].as_mut() {
             Some(tcb) => Some(NonNull::new_unchecked(tcb as *mut TCB)),
@@ -413,15 +417,22 @@ impl G8torRtos {
 
         // Start the first thread by loading its context
         asm!(
-            "ldr sp, [{sp}, #4]",     // u32* r0 = self.running->sp
-            "pop {{r4-r11}}",         // Restore callee-saved registers
-            "pop {{r0-r3, r12}}",     // Restore caller-saved registers
-            "add sp, sp, #4",         // Skip LR
-            "pop {{lr}}",             // Restore pc into lr
-            "add sp, sp, #4",         // Skip xPSR
-            "cpsie i",                // Enable interrupts
-            "bx lr",                  // Branch to the thread's PC
-            sp = in(reg) self.running.unwrap_unchecked().as_ptr(),
+            "ldr sp, =0x20008000",  // Set MSP to top of RAM (nuke any previous stack)
+            "ldr r0, [{tcb}, #4]",  // u32* r0 = self.running->sp
+            "msr psp, r0",          // Set PSP to the thread's stack pointer
+            "mrs r0, CONTROL",      // read->modify->write CONTROL
+            "orr r0, r0, #0x2",     // Switch to PSP
+            "msr CONTROL, r0",      // write CONTROL
+            "isb",                  // Instruction sync barrier
+            // sp = PSP now
+            "pop {{r4-r11}}",       // Restore callee-saved registers
+            "pop {{r0-r3, r12}}",   // Restore caller-saved registers
+            "add sp, sp, #4",       // Skip LR
+            "pop {{lr}}",           // Restore pc into lr
+            "add sp, sp, #4",       // Skip xPSR
+            "cpsie i",              // Enable interrupts
+            "bx lr",                // Branch to the thread's PC
+            tcb = in(reg) self.running.unwrap_unchecked().as_ptr(),
             options(noreturn)
         )
     }
