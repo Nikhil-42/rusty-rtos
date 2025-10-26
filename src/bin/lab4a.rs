@@ -2,7 +2,7 @@
 #![no_main]
 #![allow(static_mut_refs)]
 
-// use core::fmt::Write;
+use core::fmt::Write;
 use eel4745c::rtos::{self, G8torMutex, G8torMutexHandle, G8torRtosHandle};
 use embedded_hal::digital::OutputPin;
 use panic_halt as _;
@@ -46,41 +46,45 @@ static UART0_MUTEX: G8torMutex<
 
 extern "C" fn blink_red(rtos: G8torRtosHandle) -> ! {
     let mut r_led = unsafe { R_LED_S.take() }.expect("Red LED is initialized.");
-    // let uart_handle = unsafe { UART0_HANDLE.as_ref().expect("UART0 handle is initialized.") };
+    let uart_handle = unsafe { UART0_HANDLE.as_ref().expect("UART0 handle is initialized.") };
 
     loop {
-        rtos.sleep_ms(5);
+        // rtos.sleep_ms(5);
+        cortex_m::asm::delay(1_000_000);
         r_led
             .set_state(embedded_hal::digital::PinState::Low)
             .unwrap();
-        rtos.sleep_ms(5);
+        cortex_m::asm::delay(1_000_000);
+        // rtos.sleep_ms(5);
         r_led
             .set_state(embedded_hal::digital::PinState::High)
             .unwrap();
 
-        // let uart = UART0_MUTEX.get(rtos.take_mutex(uart_handle));
-        // writeln!(uart, "Red LED blinked!\r").unwrap();
-        // rtos.release_mutex(uart_handle, UART0_MUTEX.release(uart));
+        let uart = UART0_MUTEX.get(rtos.take_mutex(uart_handle));
+        writeln!(uart, "Red LED blinked!\r").unwrap();
+        rtos.release_mutex(uart_handle, UART0_MUTEX.release(uart));
     }
 }
 
 extern "C" fn blink_blue(rtos: G8torRtosHandle) -> ! {
     let mut b_led = unsafe { B_LED_S.take() }.expect("Blue LED is initialized.");
-    // let uart_handle = unsafe { UART0_HANDLE.as_ref().expect("UART0 handle is initialized.") };
+    let uart_handle = unsafe { UART0_HANDLE.as_ref().expect("UART0 handle is initialized.") };
 
     loop {
         b_led
             .set_state(embedded_hal::digital::PinState::Low)
             .unwrap();
+        cortex_m::asm::delay(80_000_000);
         rtos.sleep_ms(5);
         b_led
             .set_state(embedded_hal::digital::PinState::High)
             .unwrap();
+        cortex_m::asm::delay(80_000_000);
         rtos.sleep_ms(5);
 
-        // let uart = UART0_MUTEX.get(rtos.take_mutex(uart_handle));
-        // writeln!(uart, "Blue LED blinked!\r").unwrap();
-        // rtos.release_mutex(uart_handle, UART0_MUTEX.release(uart));
+        let uart = UART0_MUTEX.get(rtos.take_mutex(uart_handle));
+        writeln!(uart, "Blue LED blinked!\r").unwrap();
+        rtos.release_mutex(uart_handle, UART0_MUTEX.release(uart));
     }
 }
 
@@ -128,10 +132,10 @@ fn main() -> ! {
                 .expect("We haven't run out of atomics"),
         );
         let _ = inst
-            .add_thread(b"blk_red\0\0\0\0\0\0\0\0\0", blink_red)
+            .add_thread(b"blk_red\0\0\0\0\0\0\0\0\0", 1, blink_red)
             .expect("Failed to add red thread");
         let _ = inst
-            .add_thread(b"blk_blu\0\0\0\0\0\0\0\0\0", blink_blue)
+            .add_thread(b"blk_blu\0\0\0\0\0\0\0\0\0", 0, blink_blue)
             .expect("Failed to add blue thread");
         inst.launch()
     }

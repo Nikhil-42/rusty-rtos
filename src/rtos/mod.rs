@@ -39,6 +39,41 @@ struct TCB {
     pub name: [u8; NAME_LEN],
 }
 
+impl<'a> IntoIterator for &'a mut TCB {
+    type Item = &'a mut TCB;
+    type IntoIter = TCBIterator<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        TCBIterator {
+            end: self.prev,
+            current: Some(NonNull::from(&*self)),
+            _marker: PhantomData,
+        }
+    }
+}
+
+struct TCBIterator<'a> {
+    end: NonNull<TCB>,
+    current: Option<NonNull<TCB>>,
+    _marker: PhantomData<&'a mut TCB>,
+}
+
+impl<'a> Iterator for TCBIterator<'a> {
+    type Item = &'a mut TCB;
+
+    fn next(&mut self) -> Option<&'a mut TCB> {
+        let mut curr = self.current?;
+        let next= unsafe { curr.as_ref() }.next;
+        if curr == self.end {
+            self.current = None;
+        } else {
+            self.current = Some(next);
+        }
+        // Move to the next TCB
+        Some(unsafe { curr.as_mut() } )
+    }
+}
+
 #[repr(C)]
 pub struct G8torRtos {
     running: Option<NonNull<TCB>>,
@@ -51,8 +86,8 @@ pub struct G8torRtos {
 }
 
 // Executes in critical section so we have exclusive access to G8TOR_RTOS
-unsafe extern "C" fn _scheduler(rtos: &mut G8torRtos) -> Option<NonNull<TCB>> {
-    let mut next_thread = if let Some(running) = rtos.running.as_mut() {
+unsafe extern "C" fn _scheduler(rtos: &mut G8torRtos) -> Option<&mut TCB> {
+    let next_thread = if let Some(running) = rtos.running.as_mut() {
         // If there's a running thread, start searching from its next thread
         running.as_mut().next.as_mut()
     } else {
@@ -67,41 +102,39 @@ unsafe extern "C" fn _scheduler(rtos: &mut G8torRtos) -> Option<NonNull<TCB>> {
         next_thread?
     };
 
-    let start = next_thread.prev.as_ref().id; // To detect when we've looped through all threads
-    let mut searching = true;
-    while searching {
-        if next_thread.id == start {
-            // We have looped through all threads if we can't
-            // run this one then there are no runnable threads
-            searching = false;
-        }
-
-        if next_thread.asleep {
+    let mut selected: Option<&mut TCB> = None;
+    for thread in next_thread {
+        if thread.asleep {
             // Check if the deadline has passed
             let current_time = rtos.system_time;
-            if next_thread.sleep_until.wrapping_sub(current_time) as i32 <= 0 {
+            if thread.sleep_until.wrapping_sub(current_time) as i32 <= 0 {
                 // Wake up the thread
-                next_thread.asleep = false;
+                thread.asleep = false;
             } else {
-                // Move to the next thread
-                next_thread = next_thread.next.as_mut();
                 continue;
             }
         }
         // next_thread is not asleep
 
-        if next_thread.blocked_by.is_some() {
-            // Thread is blocked on an atomic, move to the next thread
-            next_thread = next_thread.next.as_mut();
+        if thread.blocked_by.is_some() {
             continue;
         }
         // next_thread is not blocked
 
-        return Some(NonNull::new_unchecked(next_thread));
+        if let Some(sel) = selected {
+            // We have a candidate thread, compare priorities
+            if thread.priority < sel.priority {
+                selected = Some(thread);
+            } else {
+                selected = Some(sel);
+            }
+        } else {
+            // No candidate thread yet, select this one
+            selected = Some(thread);
+        }
     }
 
-    // No thread is ready to run, return None
-    None
+    return selected;
 }
 
 #[allow(unused_variables)]
@@ -256,6 +289,7 @@ impl G8torRtos {
     pub fn add_thread(
         &mut self,
         name: &[u8; NAME_LEN],
+        priority: u8,
         thread: extern "C" fn(G8torRtosHandle) -> !,
     ) -> Result<(), ()> {
         // Find an empty TCB slot
@@ -301,7 +335,7 @@ impl G8torRtos {
                     prev: NonNull::dangling(),
                     sleep_until: 0,
                     asleep: false,
-                    priority: 0,
+                    priority: priority,
                     blocked_by: None,
                     name: *name,
                 });
