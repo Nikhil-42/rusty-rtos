@@ -178,7 +178,7 @@ unsafe extern "C" fn _syscall(r0: usize, r1: usize, r2: usize, r3: usize, imm: u
                     false
                 };
 
-                (*rtos).atomics[sem_index as usize] = if unblocked { prev_count } else { prev_count + 1 };
+                (*rtos).atomics[sem_index as usize] = if unblocked { prev_count } else { prev_count.saturating_add(1) };
 
                 prev_count as usize
             })
@@ -494,8 +494,10 @@ impl G8torRtosHandle {
         };
 
         let lock = self.take_mutex(&mutex_handle);
-        let lock = fifo.write(lock, val);
+        let (lock, lost) = fifo.write(lock, val);
         self.release_mutex(&mutex_handle, lock);
-        self.signal_semaphore(&sem_handle);
+        if !lost {
+            self.signal_semaphore(&sem_handle);
+        }
     }
 }

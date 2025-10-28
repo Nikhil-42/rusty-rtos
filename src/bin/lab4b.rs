@@ -85,6 +85,7 @@ extern "C" fn uart_tx(rtos: G8torRtosHandle) -> ! {
                 Err(nb::Error::WouldBlock) => {},
             };
         }
+        rtos.sleep_ms(200);
     }
 }
 

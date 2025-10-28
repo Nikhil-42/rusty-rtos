@@ -1,5 +1,3 @@
-use core::mem::MaybeUninit;
-
 use crate::rtos::{G8torMutex, G8torMutexLock};
 
 pub struct G8torFifoHandle {
@@ -9,6 +7,7 @@ pub struct G8torFifoHandle {
 pub(super) struct G8torFifoInternals<const LEN: usize> {
     head: usize,
     tail: usize,
+    lost: usize,
     buffer: [u32; LEN],
 }
 
@@ -24,6 +23,7 @@ impl<const LEN: usize> G8torFifo<LEN> {
             internals: G8torMutex::new(G8torFifoInternals {
                 head: 0,
                 tail: 0,
+                lost: 0,
                 buffer: [0; LEN],
             }),
             semaphore_idx,
@@ -40,11 +40,19 @@ impl<const LEN: usize> G8torFifo<LEN> {
         (lock, val)
     }
 
-    pub fn write(&'static self, lock: G8torMutexLock<G8torFifoInternals<LEN>>, val: u32) -> G8torMutexLock<G8torFifoInternals<LEN>> {
+    pub fn write(&'static self, lock: G8torMutexLock<G8torFifoInternals<LEN>>, val: u32) -> (G8torMutexLock<G8torFifoInternals<LEN>>, bool) {
         let internals = self.internals.get(lock);
-        internals.buffer[internals.tail] = val;
-        internals.tail = (internals.tail + 1) % LEN;
+        let next_tail = (internals.tail + 1) % LEN;
 
-        self.internals.release(internals)
+        let lost = next_tail == internals.head;
+        if lost {
+            // Buffer full, drop oldest
+            internals.head = (internals.head + 1) % LEN;
+            internals.lost += 1;
+        }
+        internals.buffer[internals.tail] = val;
+        internals.tail = next_tail;
+
+        (self.internals.release(internals), lost)
     }
 }
