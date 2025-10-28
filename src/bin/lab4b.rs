@@ -74,6 +74,7 @@ extern "C" fn uart_tx(rtos: G8torRtosHandle) -> ! {
     let tx_fifo_handle = unsafe { UART0_TX_FIFO.as_ref().expect("UART0 TX FIFO handle is initialized.") };
     let uart_handle = unsafe { UART0_HANDLE.as_ref().expect("UART0 handle is initialized.") };
 
+    rtos.sleep_ms(9600);
     loop {
         let val = rtos.read_fifo(tx_fifo_handle);
         loop {
@@ -85,7 +86,6 @@ extern "C" fn uart_tx(rtos: G8torRtosHandle) -> ! {
                 Err(nb::Error::WouldBlock) => {},
             };
         }
-        rtos.sleep_ms(200);
     }
 }
 
