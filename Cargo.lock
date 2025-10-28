@@ -126,6 +126,7 @@ dependencies = [
  "embedded-hal-bus",
  "heapless 0.9.1",
  "mipidsi",
+ "nb 1.1.0",
  "opt300x",
  "panic-halt",
  "panic-semihosting",

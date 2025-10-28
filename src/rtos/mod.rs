@@ -1,16 +1,16 @@
 mod atomics;
 mod handlers;
-// mod ipc;
+mod ipc;
 mod threads;
 
 pub use crate::rtos::atomics::{
     G8torMutex, G8torMutexHandle, G8torMutexLock, G8torSemaphoreHandle,
 };
-// pub use crate::rtos::ipc::G8torFifoHandle;
+pub use crate::rtos::ipc::G8torFifoHandle;
 
 use crate::rtos::atomics::G8torAtomicHandle;
 use crate::rtos::handlers::init_idle;
-// use crate::rtos::ipc::G8torFIFO;
+use crate::rtos::ipc::G8torFifo;
 use crate::rtos::threads::TCB;
 use crate::syscall;
 
@@ -24,11 +24,11 @@ use cortex_m::peripheral::syst::SystClkSource;
 const MAX_THREADS: usize = 6;
 const STACK_SIZE: usize = 512; // 2KB stack
 const NUM_ATOMICS: usize = 8;
-// const NUM_FIFO: usize = 4;
-// const FIFO_SIZE: usize = 64;
+const NUM_FIFO: usize = 4;
+const FIFO_SIZE: usize = 64;
 const NAME_LEN: usize = 16;
 
-const PERIOD_US: u32 = 1_000_000; // SysTick period in microseconds
+const PERIOD_US: u32 = 1_000; // SysTick period in microseconds
 const TICKS_PER_US: u32 = 16; // Assuming the 16 MHz core clock
 
 // SAFETY: It is never safe to have any references to this static while the RTOS is running because system_time is volatile
@@ -40,8 +40,8 @@ pub struct G8torRtos {
     system_time: u32,
     threads: [Option<TCB<NAME_LEN>>; MAX_THREADS],
     atomics: [u8; NUM_ATOMICS],
-    // fifos: [G8torFIFO<FIFO_SIZE>; NUM_FIFO],
     atomic_mask: u8,
+    fifos: [Option<G8torFifo<FIFO_SIZE>>; NUM_FIFO],
     stacks: MaybeUninit<[[u32; STACK_SIZE]; MAX_THREADS]>,
     peripherals: cortex_m::Peripherals,
 }
@@ -129,7 +129,6 @@ unsafe extern "C" fn _syscall(r0: usize, r1: usize, r2: usize, r3: usize, imm: u
             // Wait Semaphore
             let rtos = rtos as *mut G8torRtos;
             let sem_index = r0 as u8;
-            let max_count = r1 as u8;
 
             cortex_m::interrupt::free(|_cs| {
                 let prev_count = (*rtos).atomics[sem_index as usize];
@@ -142,20 +141,6 @@ unsafe extern "C" fn _syscall(r0: usize, r1: usize, r2: usize, r3: usize, imm: u
 
                     0
                 } else {
-                    // If we were at max_count, we are taking from a full semaphore
-                    if prev_count == max_count {
-                        // Unblock blocked thread
-                        let next_thread = (*running_tcb).next.as_mut();
-                        for t in next_thread {
-                            if let Some(blocker) = (*t).blocked_by {
-                                if blocker.indexp1.get() - 1 == sem_index {
-                                    // Unblock and break
-                                    (*t).blocked_by = None;
-                                    break;
-                                }
-                            }
-                        }
-                    }
                     prev_count - 1
                 };
                 (*rtos).atomics[sem_index as usize] = new_count;
@@ -167,36 +152,33 @@ unsafe extern "C" fn _syscall(r0: usize, r1: usize, r2: usize, r3: usize, imm: u
             // Signal Semphore
             let rtos = rtos as *mut G8torRtos;
             let sem_index = r0 as u8;
-            let max_count = r1 as u8;
 
             cortex_m::interrupt::free(|_cs| {
                 let prev_count = (*rtos).atomics[sem_index as usize];
 
-                let new_count = if prev_count == max_count {
-                    // Block current thread
-                    // Pend a context switch
-                    cortex_m::peripheral::SCB::set_pendsv();
-                    (*running_tcb).blocked_by = Some(G8torAtomicHandle::from_index(sem_index));
+                // If we were at 0, we are adding to an empty semaphore (move the resource )
+                let unblocked = if prev_count == 0 {
+                    // Unblock blocked thread
+                    let next_thread = (*running_tcb).next.as_mut();
 
-                    max_count
-                } else {
-                    // If we were at 0, we are adding to an empty semaphore
-                    if prev_count == 0 {
-                        // Unblock blocked thread
-                        let next_thread = (*running_tcb).next.as_mut();
-                        for t in next_thread {
-                            if let Some(blocker) = (*t).blocked_by {
-                                if blocker.indexp1.get() - 1 == sem_index {
-                                    // Unblock and break
-                                    (*t).blocked_by = None;
-                                    break;
-                                }
+                    let mut unblocked= false;
+                    for t in next_thread {
+                        if let Some(blocker) = (*t).blocked_by {
+                            if blocker.indexp1.get() - 1 == sem_index {
+                                // Unblock and break
+                                (*t).blocked_by = None;
+                                unblocked = true;
+                                break;
                             }
                         }
                     }
-                    prev_count + 1
+
+                    unblocked
+                } else {
+                    false
                 };
-                (*rtos).atomics[sem_index as usize] = new_count;
+
+                (*rtos).atomics[sem_index as usize] = if unblocked { prev_count } else { prev_count + 1 };
 
                 prev_count as usize
             })
@@ -220,10 +202,11 @@ impl G8torRtos {
         (&raw mut (*ptr).system_time).write(0);
         (&raw mut (*ptr).threads).write([const { None }; MAX_THREADS]);
         (&raw mut (*ptr).atomics).write([0; NUM_ATOMICS]);
+        (&raw mut (*ptr).atomic_mask).write(0);
+        (&raw mut (*ptr).fifos).write([const { None }; NUM_FIFO]);
         (&raw mut (*ptr).stacks).write(MaybeUninit::uninit());
         (&raw mut (*ptr).peripherals).write(peripherals);
         // G8TOR_RTOS is now fully initialized
-        // Except running which will be set when launching
 
         // Return a mutable reference to the static instance
         // To enable user code to add threads
@@ -231,7 +214,7 @@ impl G8torRtos {
     }
 
     /// Add a thread to the RTOS
-    /// Safety: This function should only be called, at the start of the program BEFORE launch
+    /// SAFETY: This function should only be called, at the start of the program BEFORE launch
     pub fn add_thread(
         &mut self,
         name: &[u8; NAME_LEN],
@@ -326,20 +309,12 @@ impl G8torRtos {
         return Err(()); // No empty slot found
     }
 
-    pub fn init_semaphore(
-        &mut self,
-        initial_count: u8,
-        max_count: u8,
-    ) -> Result<G8torSemaphoreHandle, ()> {
+    fn take_atomic(&mut self) -> Result<G8torAtomicHandle, ()> {
         for index in 0..NUM_ATOMICS {
             if (self.atomic_mask & (1 << index)) == 0 {
                 // Found an empty atomic slot
                 self.atomic_mask |= 1 << index;
-                self.atomics[index] = initial_count.min(max_count);
-                return Ok(G8torSemaphoreHandle {
-                    index: index as u8,
-                    max_count,
-                });
+                return Ok(G8torAtomicHandle::from_index(index as u8));
             }
         }
 
@@ -347,23 +322,51 @@ impl G8torRtos {
         Err(())
     }
 
+    pub fn init_semaphore(
+        &mut self,
+        initial_count: u8,
+        max_count: u8,
+    ) -> Result<G8torSemaphoreHandle, ()> {
+        let index = self.take_atomic()?.indexp1.get() - 1;
+        self.atomics[index as usize] = initial_count.min(max_count);
+        Ok(G8torSemaphoreHandle {
+            index: index as u8,
+        })
+    }
+
     pub fn init_mutex<T>(
         &mut self,
         mutex: &'static G8torMutex<T>,
     ) -> Result<G8torMutexHandle<T>, ()> {
-        for index in 0..NUM_ATOMICS {
-            if (self.atomic_mask & (1 << index)) == 0 {
-                // Found an empty atomic slot
-                self.atomic_mask |= 1 << index;
-                self.atomics[index] = 1; // Mutex is initially unlocked
-                return Ok(G8torMutexHandle {
+        let index = self.take_atomic()?.indexp1.get() - 1;
+        self.atomics[index as usize] = 1; // Mutex is initially unlocked
+        Ok(G8torMutexHandle {
+            index: index,
+            mutex,
+        })
+    }
+
+    pub fn init_fifo(&mut self) -> Result<G8torFifoHandle, ()> {
+        let mutex_idx = self.take_atomic()?.indexp1.get() - 1;
+        self.atomics[mutex_idx as usize] = 1; // Mutex is initially unlocked
+        let semaphore_idx = self.take_atomic()?.indexp1.get() - 1;
+        self.atomics[semaphore_idx as usize] = 0; // Semaphore is initially empty
+
+        for index in 0..NUM_FIFO {
+            if self.fifos[index].is_none() {
+                // Found an empty FIFO slot
+                self.fifos[index] = Some(G8torFifo::new(
+                    mutex_idx,
+                    semaphore_idx,
+                ));
+
+                return Ok(G8torFifoHandle {
                     index: index as u8,
-                    mutex,
                 });
             }
         }
 
-        // No empty atomic slot found
+        // No empty FIFO slot found
         Err(())
     }
 
@@ -434,12 +437,12 @@ impl G8torRtosHandle {
         syscall!(0; ms);
     }
 
-    pub fn wait_semaphore(&self, sem: G8torSemaphoreHandle) -> u8 {
-        syscall!(1; sem.index as usize, sem.max_count as usize) as u8
+    pub fn wait_semaphore(&self, sem: &G8torSemaphoreHandle) -> u8 {
+        syscall!(1; sem.index as usize) as u8
     }
 
-    pub fn signal_semaphore(&self, sem: G8torSemaphoreHandle) -> u8 {
-        syscall!(2; sem.index as usize, sem.max_count as usize) as u8
+    pub fn signal_semaphore(&self, sem: &G8torSemaphoreHandle) -> u8 {
+        syscall!(2; sem.index as usize) as u8
     }
 
     pub fn take_mutex<T>(&self, handle: &G8torMutexHandle<T>) -> G8torMutexLock<T> {
@@ -458,5 +461,41 @@ impl G8torRtosHandle {
         } else {
             panic!("Attempted to release a mutex with a lock from a different mutex!");
         }
+    }
+
+    pub fn read_fifo(&self, handle: &G8torFifoHandle) -> u32 {
+        // SAFTEY: We do not write to fifos ever after initialization
+        let fifo = unsafe {  &(*G8TOR_RTOS.as_ptr()).fifos[handle.index as usize].as_ref() }.expect("FIFO should be initialized.");
+        let sem_handle = G8torSemaphoreHandle {
+            index: fifo.semaphore_idx,
+        };
+
+        let mutex_handle = G8torMutexHandle {
+            index: fifo.mutex_idx,
+            mutex: &fifo.internals,
+        };
+
+        self.wait_semaphore(&sem_handle);
+        let (lock, res) = fifo.read(self.take_mutex(&mutex_handle));
+        self.release_mutex(&mutex_handle, lock);
+        res
+    }
+
+    pub fn write_fifo(&self, handle: &G8torFifoHandle, val: u32) {
+        // SAFTEY: We do not write to fifos ever after initialization
+        let fifo = unsafe {  &(*G8TOR_RTOS.as_ptr()).fifos[handle.index as usize] .as_ref().unwrap_unchecked() };
+        let sem_handle = G8torSemaphoreHandle {
+            index: fifo.semaphore_idx,
+        };
+
+        let mutex_handle = G8torMutexHandle {
+            index: fifo.mutex_idx,
+            mutex: &fifo.internals,
+        };
+
+        let lock = self.take_mutex(&mutex_handle);
+        let lock = fifo.write(lock, val);
+        self.release_mutex(&mutex_handle, lock);
+        self.signal_semaphore(&sem_handle);
     }
 }

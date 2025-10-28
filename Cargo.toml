@@ -13,7 +13,7 @@ cortex-m-rt = { path = "../cortex-m/cortex-m-rt" }
 tm4c123x-hal = { path = "../tm4c-hal/tm4c123x-hal" }
 
 [profile.dev]
-opt-level = 3
+opt-level = 1
 debug = true
 
 [dependencies]
@@ -32,4 +32,5 @@ embedded-graphics = "0.8.1"
 embedded-hal-bus = { version = "0.3.0", features = ["portable-atomic"] }
 bmi160 = "1.1.0"
 bme280 = "0.5.1"
+nb = "1.1.0"
 

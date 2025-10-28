@@ -41,7 +41,6 @@ pub struct G8torMutexLock<T: 'static> {
 #[derive(Clone, Copy)]
 pub struct G8torSemaphoreHandle {
     pub(super) index: u8,
-    pub(super) max_count: u8,
 }
 
 impl PartialEq<G8torSemaphoreHandle> for G8torAtomicHandle {
@@ -67,6 +66,12 @@ impl<T> G8torMutex<T> {
     pub const fn empty() -> Self {
         G8torMutex {
             resource: UnsafeCell::new(MaybeUninit::uninit()),
+        }
+    }
+
+    pub const fn new(resource: T) -> Self {
+        G8torMutex {
+            resource: UnsafeCell::new(MaybeUninit::new(resource)),
         }
     }
 
