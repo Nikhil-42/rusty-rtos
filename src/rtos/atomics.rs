@@ -28,17 +28,26 @@ impl<'a, T> From<G8torMutexHandle<T>> for G8torAtomicHandle {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Copy, Clone)]
 pub struct G8torMutexHandle<T: 'static> {
     pub(super) index: u8,
     pub(super) mutex: &'static G8torMutex<T>,
+}
+
+impl<T> core::fmt::Debug for G8torMutexHandle<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("G8torMutexHandle")
+            .field("index", &self.index)
+            .field("mutex", &(self.mutex as *const G8torMutex<T>))
+            .finish()
+    }
 }
 
 pub struct G8torMutexLock<T: 'static> {
     pub(super) mutex: &'static G8torMutex<T>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct G8torSemaphoreHandle {
     pub(super) index: u8,
 }
@@ -89,6 +98,12 @@ impl<T> G8torMutex<T> {
         } else {
             panic!("Attempted to get a mutex resource with an invalid lock.");
         }
+    }
+
+    /// Steal the resource without a lock
+    pub unsafe fn steal(&'static self) -> &'static mut T {
+        // SAFETY: The caller must ensure exclusive access to the resource.
+        unsafe { (*self.resource.get()).assume_init_mut() }
     }
 
     /// Trade the resource back for a lock

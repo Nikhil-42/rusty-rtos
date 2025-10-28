@@ -7,20 +7,20 @@ readme = "README.md"
 name = "eel4745c"
 version = "0.1.0"
 
-[patch.crates-io]
-cortex-m = { path = "../cortex-m/cortex-m" }
-cortex-m-rt = { path = "../cortex-m/cortex-m-rt" }
-tm4c123x-hal = { path = "../tm4c-hal/tm4c123x-hal" }
+# [patch.crates-io]
+# cortex-m = { path = "../cortex-m/cortex-m" }
+# cortex-m-rt = { path = "../cortex-m/cortex-m-rt" }
+# tm4c123x-hal = { path = "../tm4c-hal/tm4c123x-hal" }
 
 [profile.dev]
-opt-level = 1
+opt-level = 0
 debug = true
 
 [dependencies]
 embedded-hal = "1.0.0"
 eh0 = { package = "embedded-hal", version = "0.2.7", features = ["unproven"] }
-mipidsi = "0.9.0"
-opt300x = "1.0.0"
+mipidsi = "0.7.1"
+# opt300x = "1.0.0"
 panic-semihosting = "0.6.0"
 panic-halt = "1.0.0"
 tm4c123x-hal = { version = "0.10.3", features = ["rt"] }
@@ -30,7 +30,8 @@ cortex-m-rt = { version = "0.7.5", features = ["device"] }
 cortex-m-semihosting = "0.5.0"
 embedded-graphics = "0.8.1"
 embedded-hal-bus = { version = "0.3.0", features = ["portable-atomic"] }
-bmi160 = "1.1.0"
-bme280 = "0.5.1"
+# bmi160 = "1.1.0"
+# bme280 = "0.5.1"
 nb = "1.1.0"
+display-interface-spi = "0.4.0"
 

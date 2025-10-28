@@ -1,5 +1,6 @@
 use crate::rtos::{G8torMutex, G8torMutexLock};
 
+#[derive(Copy, Clone, Debug)]
 pub struct G8torFifoHandle {
     pub(super) index: u8,
 }

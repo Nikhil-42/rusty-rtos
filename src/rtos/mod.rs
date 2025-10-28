@@ -28,7 +28,7 @@ use core::{arch::asm, ptr::NonNull};
 use cortex_m::interrupt::InterruptNumber;
 use cortex_m::peripheral::scb::SystemHandler;
 use cortex_m::peripheral::syst::SystClkSource;
-use tm4c123x_hal::pac::{Interrupt, NVIC};
+use tm4c123x_hal::tm4c123x::{Interrupt, NVIC};
 
 const MAX_THREADS: usize = 8;
 const MAX_PERIODIC: usize = 4;
@@ -74,7 +74,7 @@ impl G8torRtos {
         (&raw mut (*ptr).atomics).write([0; NUM_ATOMICS]);
         (&raw mut (*ptr).atomic_mask).write(0);
         (&raw mut (*ptr).fifos).write([const { None }; NUM_FIFO]);
-        (&raw mut (*ptr).stacks).write(MaybeUninit::uninit());
+        // (&raw mut (*ptr).stacks).write(MaybeUninit::uninit());
         (&raw mut (*ptr).peripherals).write(peripherals);
         // G8TOR_RTOS is now fully initialized
 
@@ -185,10 +185,6 @@ impl G8torRtos {
             return Err(()); // Invalid IRQ number
         }
 
-        if irq.number() < self::aperiodic::NUM_EXCEPTIONS as u16 {
-            return Err(()); // Cannot use exception numbers
-        }
-
         if priority > 6 || priority == 0 {
             return Err(()); // Invalid priority
         }
@@ -261,10 +257,9 @@ impl G8torRtos {
     pub fn init_semaphore(
         &mut self,
         initial_count: u8,
-        max_count: u8,
     ) -> Result<G8torSemaphoreHandle, ()> {
         let index = self.take_atomic()?.indexp1.get() - 1;
-        self.atomics[index as usize] = initial_count.min(max_count);
+        self.atomics[index as usize] = initial_count;
         Ok(G8torSemaphoreHandle {
             index: index as u8,
         })

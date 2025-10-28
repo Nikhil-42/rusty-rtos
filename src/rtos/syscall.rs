@@ -6,7 +6,7 @@ use super::{G8TOR_RTOS, NAME_LEN};
 use super::{G8torRtos, G8torAtomicHandle, TCB};
 
 #[inline(always)]
-fn sleep(rtos: *mut G8torRtos, running_tcb: *mut TCB<NAME_LEN>, duration: u32) -> usize {
+pub fn sleep(rtos: *mut G8torRtos, running_tcb: *mut TCB<NAME_LEN>, duration: u32) -> usize {
     // Pend a context switch
     cortex_m::peripheral::SCB::set_pendsv();
 
@@ -28,7 +28,7 @@ fn sleep(rtos: *mut G8torRtos, running_tcb: *mut TCB<NAME_LEN>, duration: u32) -
 }
 
 #[inline(always)]
-fn wait_semaphore(rtos: *mut G8torRtos, running_tcb: *mut TCB<NAME_LEN>, sem_index: u8) -> usize {
+pub fn wait_semaphore(rtos: *mut G8torRtos, running_tcb: *mut TCB<NAME_LEN>, sem_index: u8) -> usize {
     cortex_m::interrupt::free(|_cs| {
         let prev_count = unsafe { (*rtos).atomics[sem_index as usize] };
 
@@ -53,7 +53,7 @@ fn wait_semaphore(rtos: *mut G8torRtos, running_tcb: *mut TCB<NAME_LEN>, sem_ind
 }
 
 #[inline(always)]
-fn signal_semaphore(rtos: *mut G8torRtos, running_tcb: *mut TCB<NAME_LEN>, sem_index: u8) -> usize {
+pub fn signal_semaphore(rtos: *mut G8torRtos, running_tcb: *mut TCB<NAME_LEN>, sem_index: u8) -> usize {
     cortex_m::interrupt::free(|_cs| {
         let prev_count = unsafe { (*rtos).atomics[sem_index as usize] };
 
@@ -88,7 +88,7 @@ fn signal_semaphore(rtos: *mut G8torRtos, running_tcb: *mut TCB<NAME_LEN>, sem_i
 }
 
 #[inline(always)]
-fn spawn_thread(rtos: *mut G8torRtos, name: &[u8; NAME_LEN], priority: u8, thread: extern "C" fn(super::G8torRtosHandle) -> !) -> usize {
+pub fn spawn_thread(rtos: *mut G8torRtos, name: &[u8; NAME_LEN], priority: u8, thread: extern "C" fn(super::G8torRtosHandle) -> !) -> usize {
     cortex_m::interrupt::free(|_cs| {
         // SAFETY: This is safe because we are in a critical section
         let rtos = unsafe { &mut *rtos };
@@ -180,7 +180,7 @@ fn spawn_thread(rtos: *mut G8torRtos, name: &[u8; NAME_LEN], priority: u8, threa
 }
 
 #[inline(always)]
-fn kill_thread(_rtos: *mut G8torRtos, running_tcb: *mut TCB<NAME_LEN>, thread_id: usize) -> usize {
+pub fn kill_thread(_rtos: *mut G8torRtos, running_tcb: *mut TCB<NAME_LEN>, thread_id: usize) -> usize {
     // SAFETY: This is safe because PendSV will not run until after we exit the syscall
     let mut to_remove= None;
     for t in unsafe { &mut *running_tcb } {
