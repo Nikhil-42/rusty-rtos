@@ -85,6 +85,7 @@ impl G8torRtos {
     ) -> Result<(), ()> {
         // Find an empty TCB slot
         let _self_ptr = self as *mut Self;
+
         for id in 0..MAX_THREADS {
             if self.threads[id].is_none() {
                 // Initialize the stack for the new thread
@@ -290,6 +291,10 @@ pub struct G8torRtosHandle {
 }
 
 impl G8torRtosHandle {
+    pub const fn tid(&self) -> usize {
+        self.id
+    }
+
     pub fn yield_now(&self) {
         // Sleep for 0 ticks to yield the CPU
         syscall!(0; 0);
@@ -363,9 +368,8 @@ impl G8torRtosHandle {
         }
     }
 
-    pub fn add_thread(&self) {
-        // Not implemented in handle
-        todo!()
+    pub fn spawn_thread(&self, name: &[u8; NAME_LEN], priority: u8, thread: extern "C" fn(G8torRtosHandle) -> !) -> usize {
+        syscall!(254; name.as_ptr() as usize, priority as usize, thread as usize)
     }
 
     pub fn kill(&self) -> ! {
@@ -373,8 +377,8 @@ impl G8torRtosHandle {
         unreachable!()
     }
      
-    pub fn kill_thread(&self, thread_id: usize) -> ! {
-        syscall!(255; thread_id);
-        unreachable!()
+    // Kill a thread by its ID (may not return if the running thread is killed)
+    pub fn kill_thread(&self, thread_id: usize) -> usize {
+        syscall!(255; thread_id)
     }
 }
