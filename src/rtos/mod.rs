@@ -2,17 +2,20 @@ mod atomics;
 mod handlers;
 mod ipc;
 mod threads;
+mod syscall;
+mod scheduler;
 
-pub use crate::rtos::atomics::{
+use crate::syscall;
+
+pub use self::atomics::{
     G8torMutex, G8torMutexHandle, G8torMutexLock, G8torSemaphoreHandle,
 };
-pub use crate::rtos::ipc::G8torFifoHandle;
+pub use self::ipc::G8torFifoHandle;
 
-use crate::rtos::atomics::G8torAtomicHandle;
-use crate::rtos::handlers::init_idle;
-use crate::rtos::ipc::G8torFifo;
-use crate::rtos::threads::TCB;
-use crate::syscall;
+use self::atomics::G8torAtomicHandle;
+use self::handlers::init_idle;
+use self::ipc::G8torFifo;
+use self::threads::TCB;
 
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
@@ -46,147 +49,6 @@ pub struct G8torRtos {
     peripherals: cortex_m::Peripherals,
 }
 
-// Executes in critical section so we have exclusive access to G8TOR_RTOS
-unsafe extern "C" fn _scheduler(rtos: &mut G8torRtos) -> Option<&mut TCB<NAME_LEN>> {
-    let next_thread = if let Some(running) = rtos.running.as_mut() {
-        // If there's a running thread, start searching from its next thread
-        running.as_mut().next.as_mut()
-    } else {
-        // No running thread, start from the first living thread
-        let mut next_thread = None;
-        for t in rtos.threads.iter_mut() {
-            if let Some(tcb) = t.as_mut() {
-                next_thread = Some(tcb);
-                break;
-            }
-        }
-        next_thread?
-    };
-
-    let mut selected: Option<&mut TCB<NAME_LEN>> = None;
-    for thread in next_thread {
-        if thread.asleep {
-            // Check if the deadline has passed
-            let current_time = rtos.system_time;
-            if thread.sleep_until.wrapping_sub(current_time) as i32 <= 0 {
-                // Wake up the thread
-                thread.asleep = false;
-            } else {
-                continue;
-            }
-        }
-        // next_thread is not asleep
-
-        if thread.blocked_by.is_some() {
-            continue;
-        }
-        // next_thread is not blocked
-
-        if let Some(sel) = selected {
-            // We have a candidate thread, compare priorities
-            if thread.priority < sel.priority {
-                selected = Some(thread);
-            } else {
-                selected = Some(sel);
-            }
-        } else {
-            // No candidate thread yet, select this one
-            selected = Some(thread);
-        }
-    }
-
-    return selected;
-}
-
-// Does not execute in critical section so we must create a critical section to access G8TOR_RTOS
-#[allow(unused_variables)]
-unsafe extern "C" fn _syscall(r0: usize, r1: usize, r2: usize, r3: usize, imm: u8) -> usize {
-    let rtos = &raw mut G8TOR_RTOS as *mut G8torRtos; // SAFETY: the RTOS is definitely running so this is valid
-    let running_tcb = (*rtos).running.unwrap_unchecked().as_ptr(); // SAFETY: the running thread called this syscall
-    match imm {
-        0 => {
-            // Sleep
-            let sleep_time = r0 as u32;
-
-            // Pend a context switch
-            cortex_m::peripheral::SCB::set_pendsv();
-
-            if r0 > 0 {
-                // Sleep syscall
-                let system_time = &raw const (*rtos).system_time;
-                let current_time = core::ptr::read_volatile(system_time);
-                let wake_time = current_time.wrapping_add(sleep_time);
-
-                // SAFTEY: This is safe because PendSV will not run until after we exit the syscall
-                // so the running thread cannot change while we are in this function
-                (*running_tcb).asleep = true;
-                (*running_tcb).sleep_until = wake_time;
-            }
-
-            0
-        }
-        1 => {
-            // Wait Semaphore
-            let rtos = rtos as *mut G8torRtos;
-            let sem_index = r0 as u8;
-
-            cortex_m::interrupt::free(|_cs| {
-                let prev_count = (*rtos).atomics[sem_index as usize];
-
-                let new_count = if prev_count == 0 {
-                    // Block current thread
-                    // Pend a context switch
-                    cortex_m::peripheral::SCB::set_pendsv();
-                    (*running_tcb).blocked_by = Some(G8torAtomicHandle::from_index(sem_index));
-
-                    0
-                } else {
-                    prev_count - 1
-                };
-                (*rtos).atomics[sem_index as usize] = new_count;
-
-                prev_count as usize
-            })
-        }
-        2 => {
-            // Signal Semphore
-            let rtos = rtos as *mut G8torRtos;
-            let sem_index = r0 as u8;
-
-            cortex_m::interrupt::free(|_cs| {
-                let prev_count = (*rtos).atomics[sem_index as usize];
-
-                // If we were at 0, we are adding to an empty semaphore (move the resource )
-                let unblocked = if prev_count == 0 {
-                    // Unblock blocked thread
-                    let next_thread = (*running_tcb).next.as_mut();
-
-                    let mut unblocked= false;
-                    for t in next_thread {
-                        if let Some(blocker) = (*t).blocked_by {
-                            if blocker.indexp1.get() - 1 == sem_index {
-                                // Unblock and break
-                                (*t).blocked_by = None;
-                                unblocked = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    unblocked
-                } else {
-                    false
-                };
-
-                (*rtos).atomics[sem_index as usize] = if unblocked { prev_count } else { prev_count.saturating_add(1) };
-
-                prev_count as usize
-            })
-        }
-
-        _ => unreachable!(), // Unknown syscall
-    }
-}
 
 impl G8torRtos {
     #[allow(static_mut_refs)]
@@ -499,5 +361,20 @@ impl G8torRtosHandle {
         if !lost {
             self.signal_semaphore(&sem_handle);
         }
+    }
+
+    pub fn add_thread(&self) {
+        // Not implemented in handle
+        todo!()
+    }
+
+    pub fn kill(&self) -> ! {
+        syscall!(255; self.id);
+        unreachable!()
+    }
+     
+    pub fn kill_thread(&self, thread_id: usize) -> ! {
+        syscall!(255; thread_id);
+        unreachable!()
     }
 }

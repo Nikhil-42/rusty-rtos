@@ -1,8 +1,7 @@
 use core::arch::{asm, naked_asm};
-
 use cortex_m_rt::{exception, ExceptionFrame};
 
-use crate::rtos::{_scheduler, _syscall, G8TOR_RTOS};
+use super::{scheduler::_scheduler, syscall::_syscall, G8TOR_RTOS};
 
 #[exception]
 unsafe fn HardFault(ef: &ExceptionFrame) -> ! {
