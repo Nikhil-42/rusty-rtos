@@ -114,6 +114,11 @@ extern "C" fn uart_rx(rtos: G8torRtosHandle) -> ! {
     }
 }
 
+extern "C" fn periodic_task() {
+
+    cortex_m::asm::nop();
+}
+
 #[entry]
 fn main() -> ! {
     let p = pac::Peripherals::take().unwrap();
@@ -177,6 +182,10 @@ fn main() -> ! {
         let _ = inst
             .add_thread(b"publish\0\0\0\0\0\0\0\0\0", 1, publisher)
             .expect("Failed to add publisher thread");
+        let _ = inst
+            .add_periodic(2000, 0, periodic_task).expect("There is space in the Periodic Threads LL");
+        let _ = inst
+            .add_periodic(1000, 1, periodic_task).expect("There is space in the Periodic Threads LL");
         inst.launch()
     }
 }

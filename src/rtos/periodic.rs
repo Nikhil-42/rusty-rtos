@@ -50,6 +50,7 @@ pub(super) fn _run_periodics(rtos: &'static mut super::G8torRtos) {
         for ptcb in ptcb.into_iter() {
             if rtos.system_time == ptcb.execution_time {
                 (ptcb.task)();
+                ptcb.execution_time += ptcb.period;
             }
         }
     }
