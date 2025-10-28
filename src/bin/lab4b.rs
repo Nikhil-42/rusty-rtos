@@ -56,25 +56,24 @@ extern "C" fn publisher(rtos: G8torRtosHandle) -> ! {
 
     loop {
         rtos.write_fifo(tx_fifo_handle, count as u32);
-        rtos.sleep_ms(100);
+        rtos.sleep_ms(1_000);
         count = count.wrapping_add(1);
     }
 }
 
-// extern "C" fn consumer(rtos: G8torRtosHandle) -> ! {
-//     let rx_fifo_handle = unsafe { UART0_RX_FIFO.as_ref().expect("UART0 RX FIFO handle is initialized.") };
+extern "C" fn consumer(rtos: G8torRtosHandle) -> ! {
+    let rx_fifo_handle = unsafe { UART0_RX_FIFO.as_ref().expect("UART0 RX FIFO handle is initialized.") };
 
-//     loop {
-//         let val = rtos.read_fifo(rx_fifo_handle);
-//         rtos.sleep_ms(val as usize);
-//     }
-// }
+    loop {
+        let val = rtos.read_fifo(rx_fifo_handle);
+        rtos.sleep_ms(val as usize);
+    }
+}
 
 extern "C" fn uart_tx(rtos: G8torRtosHandle) -> ! {
     let tx_fifo_handle = unsafe { UART0_TX_FIFO.as_ref().expect("UART0 TX FIFO handle is initialized.") };
     let uart_handle = unsafe { UART0_HANDLE.as_ref().expect("UART0 handle is initialized.") };
 
-    rtos.sleep_ms(9600);
     loop {
         let val = rtos.read_fifo(tx_fifo_handle);
         loop {
@@ -89,21 +88,21 @@ extern "C" fn uart_tx(rtos: G8torRtosHandle) -> ! {
     }
 }
 
-// extern "C" fn uart_rx(rtos: G8torRtosHandle) -> ! {
-//     let rx_fifo_handle = unsafe { UART0_RX_FIFO.as_ref().expect("UART0 TX FIFO handle is initialized.") };
-//     let uart_handle = unsafe { UART0_HANDLE.as_ref().expect("UART0 handle is initialized.") };
+extern "C" fn uart_rx(rtos: G8torRtosHandle) -> ! {
+    let rx_fifo_handle = unsafe { UART0_RX_FIFO.as_ref().expect("UART0 TX FIFO handle is initialized.") };
+    let uart_handle = unsafe { UART0_HANDLE.as_ref().expect("UART0 handle is initialized.") };
 
-//     loop {
-//         let uart = UART0_MUTEX.get(rtos.take_mutex(uart_handle));
-//         let val = uart.read();
-//         rtos.release_mutex(uart_handle, UART0_MUTEX.release(uart));
-//         let val = match val {
-//             Ok(v) => v,
-//             Err(nb::Error::WouldBlock) => { continue; }
-//         };
-//         rtos.write_fifo(rx_fifo_handle, val as u32);
-//     }
-// }
+    loop {
+        let uart = UART0_MUTEX.get(rtos.take_mutex(uart_handle));
+        let val = uart.read();
+        rtos.release_mutex(uart_handle, UART0_MUTEX.release(uart));
+        let val = match val {
+            Ok(v) => v,
+            Err(nb::Error::WouldBlock) => { continue; }
+        };
+        rtos.write_fifo(rx_fifo_handle, val as u32);
+    }
+}
 
 #[entry]
 fn main() -> ! {
@@ -158,16 +157,16 @@ fn main() -> ! {
         );
         let _ = inst
             .add_thread(b"publish\0\0\0\0\0\0\0\0\0", 1, publisher)
-            .expect("Failed to add red thread");
-        // let _ = inst
-        //     .add_thread(b"consume\0\0\0\0\0\0\0\0\0", 0, consumer)
-        //     .expect("Failed to add blue thread");
+            .expect("Failed to add publisher thread");
+        let _ = inst
+            .add_thread(b"consume\0\0\0\0\0\0\0\0\0", 0, consumer)
+            .expect("Failed to add subscriber thread");
         let _ = inst
             .add_thread(b"uart_tx\0\0\0\0\0\0\0\0\0", 2, uart_tx)
             .expect("Failed to add uart_tx thread");
-        // let _ = inst
-        //     .add_thread(b"uart_rx\0\0\0\0\0\0\0\0\0", 2, uart_rx)
-        //     .expect("Failed to add uart_rx thread");
+        let _ = inst
+            .add_thread(b"uart_rx\0\0\0\0\0\0\0\0\0", 2, uart_rx)
+            .expect("Failed to add uart_rx thread");
         inst.launch()
     }
 }
