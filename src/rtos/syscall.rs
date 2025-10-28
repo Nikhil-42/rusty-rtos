@@ -1,7 +1,5 @@
 use core::ptr::NonNull;
 
-use cortex_m::interrupt::CriticalSection;
-
 use crate::rtos::MAX_THREADS;
 
 use super::{G8TOR_RTOS, NAME_LEN};

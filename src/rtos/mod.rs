@@ -4,6 +4,7 @@ mod ipc;
 mod threads;
 mod syscall;
 mod scheduler;
+mod aperiodic;
 
 use crate::syscall;
 
@@ -16,6 +17,7 @@ use self::atomics::G8torAtomicHandle;
 use self::handlers::init_idle;
 use self::ipc::G8torFifo;
 use self::threads::TCB;
+use self::aperiodic::relocate_vtor;
 
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
@@ -238,6 +240,10 @@ impl G8torRtos {
 
         // Configure the idle thread jump address
         init_idle();
+
+        // Move vtor to RAM
+        let scb = &mut self.peripherals.SCB;
+        relocate_vtor(scb);
 
         // Set the currently running thread to the first thread added
         self.running = match (*_self_ptr).threads[0].as_mut() {

@@ -50,6 +50,7 @@ static UART0_MUTEX: G8torMutex<
     >,
 > = G8torMutex::empty();
 
+#[inline(never)]
 extern "C" fn publisher(rtos: G8torRtosHandle) -> ! {
     let tx_fifo_handle = unsafe { UART0_TX_FIFO.as_ref().expect("UART0 TX FIFO handle is initialized.") };
 
@@ -61,6 +62,7 @@ extern "C" fn publisher(rtos: G8torRtosHandle) -> ! {
     rtos.kill();
 }
 
+#[inline(never)]
 extern "C" fn consumer(rtos: G8torRtosHandle) -> ! {
     let rx_fifo_handle = unsafe { UART0_RX_FIFO.as_ref().expect("UART0 RX FIFO handle is initialized.") };
 
@@ -76,6 +78,7 @@ extern "C" fn consumer(rtos: G8torRtosHandle) -> ! {
     }
 }
 
+#[inline(never)]
 extern "C" fn uart_tx(rtos: G8torRtosHandle) -> ! {
     let tx_fifo_handle = unsafe { UART0_TX_FIFO.as_ref().expect("UART0 TX FIFO handle is initialized.") };
     let uart_handle = unsafe { UART0_HANDLE.as_ref().expect("UART0 handle is initialized.") };
@@ -94,6 +97,7 @@ extern "C" fn uart_tx(rtos: G8torRtosHandle) -> ! {
     }
 }
 
+#[inline(never)]
 extern "C" fn uart_rx(rtos: G8torRtosHandle) -> ! {
     let rx_fifo_handle = unsafe { UART0_RX_FIFO.as_ref().expect("UART0 TX FIFO handle is initialized.") };
     let uart_handle = unsafe { UART0_HANDLE.as_ref().expect("UART0 handle is initialized.") };
