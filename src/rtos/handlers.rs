@@ -1,7 +1,7 @@
 use core::arch::{asm, naked_asm};
 use cortex_m_rt::{exception, ExceptionFrame};
 
-use super::{scheduler::_scheduler, syscall::_syscall, G8TOR_RTOS};
+use super::{scheduler::_scheduler, syscall::_syscall, periodic::_run_periodics, G8TOR_RTOS};
 
 #[exception]
 unsafe fn HardFault(ef: &ExceptionFrame) -> ! {
@@ -30,13 +30,20 @@ unsafe extern "C" fn SysTick() {
         "add r1, r1, #1",           // r1++
         "str r1, [r0, #4]",         // G8TOR_RTOS.system_time = r1
 
+        // Call periodic task runner
+        "push {{r0, lr}}",              // Save lr
+        "bl {PERIODIC_RUNNER}",         // _run_periodics(r0 = &G8TOR_RTOS)
+        "pop {{r0, lr}}",               // Restore lr
+
         // Set the PENDSVSET bit to delay the context switch until after all
         // other interrupts have been serviced.
         "ldr r0, =0xE000ED04",
         "ldr r1, =0x10000000",
         "str r1, [r0]",
+
         "bx lr",
-        G8TOR_RTOS = sym G8TOR_RTOS
+        G8TOR_RTOS = sym G8TOR_RTOS,
+        PERIODIC_RUNNER = sym _run_periodics
     )
 }
 

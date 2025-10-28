@@ -5,6 +5,7 @@ mod threads;
 mod syscall;
 mod scheduler;
 mod aperiodic;
+mod periodic;
 
 use crate::syscall;
 
@@ -18,6 +19,7 @@ use self::handlers::init_idle;
 use self::ipc::G8torFifo;
 use self::threads::TCB;
 use self::aperiodic::relocate_vtor;
+use self::periodic::PeriodicTCB;
 
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
@@ -28,7 +30,8 @@ use cortex_m::peripheral::scb::SystemHandler;
 use cortex_m::peripheral::syst::SystClkSource;
 use tm4c123x_hal::pac::{Interrupt, NVIC};
 
-const MAX_THREADS: usize = 6;
+const MAX_THREADS: usize = 8;
+const MAX_PERIODIC: usize = 4;
 const STACK_SIZE: usize = 512; // 2KB stack
 const NUM_ATOMICS: usize = 8;
 const NUM_FIFO: usize = 4;
@@ -46,6 +49,7 @@ pub struct G8torRtos {
     running: Option<NonNull<TCB<NAME_LEN>>>,
     system_time: u32,
     threads: [Option<TCB<NAME_LEN>>; MAX_THREADS],
+    periodic: [Option<PeriodicTCB>; MAX_PERIODIC],
     atomics: [u8; NUM_ATOMICS],
     atomic_mask: u8,
     fifos: [Option<G8torFifo<FIFO_SIZE>>; NUM_FIFO],
@@ -176,7 +180,7 @@ impl G8torRtos {
         return Err(()); // No empty slot found
     }
 
-    pub fn add_atask(&mut self, irq: Interrupt, priority: u8, atask: extern "C" fn() ) -> Result<(), ()> {
+    pub fn add_event(&mut self, irq: Interrupt, priority: u8, atask: extern "C" fn() ) -> Result<(), ()> {
         if irq.number() >= self::aperiodic::NUM_IRQ as u16 {
             return Err(()); // Invalid IRQ number
         }
@@ -202,6 +206,43 @@ impl G8torRtos {
         }
         
         return Ok(());
+    }
+
+    pub fn add_periodic(&mut self, period: u32, execution_time: u32, task: extern "C" fn() ) -> Result<(), ()> {
+        let id = self.periodic.iter().position(|p| p.is_none()).ok_or(())?;
+
+        // Insert the new periodic TCB
+        let ptcb = PeriodicTCB {
+            period,
+            execution_time: execution_time,
+            task,
+            next: NonNull::dangling(),
+            prev: NonNull::dangling(),
+        };
+
+        let ptcb_ptr = self.periodic[id].insert(ptcb) as *mut PeriodicTCB;
+
+        // Link it into the doubly-linked list
+        // If this is the first periodic thread, point to itself
+        if id == 0 {
+            unsafe {
+                (*ptcb_ptr).next = NonNull::new_unchecked(ptcb_ptr);
+                (*ptcb_ptr).prev = NonNull::new_unchecked(ptcb_ptr);
+            }
+        } else {
+            // Link after the previous inserted periodic thread
+            let prev_id = id - 1;
+            let prev_ptr = self.periodic[prev_id].as_mut().unwrap() as *mut PeriodicTCB;
+
+            unsafe {
+                (*ptcb_ptr).next = (*prev_ptr).next;
+                (*ptcb_ptr).prev = NonNull::new_unchecked(prev_ptr);
+                (*(*prev_ptr).next.as_ptr()).prev = NonNull::new_unchecked(ptcb_ptr);
+                (*prev_ptr).next = NonNull::new_unchecked(ptcb_ptr);
+            }
+        }
+
+        Ok(())
     }
 
     fn take_atomic(&mut self) -> Result<G8torAtomicHandle, ()> {
