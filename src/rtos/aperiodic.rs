@@ -1,7 +1,9 @@
 use cortex_m::peripheral::SCB;
 use core::{mem::MaybeUninit, ptr};
 
-const NUM_VECTORS: usize = 155;
+pub(super) const NUM_EXCEPTIONS: usize = 16;    
+pub(super) const NUM_IRQ: usize = 139;
+const NUM_VECTORS: usize = NUM_EXCEPTIONS + NUM_IRQ;
 
 extern "C" {
     static __vector_table: [unsafe extern "C" fn(); NUM_VECTORS];
@@ -20,3 +22,15 @@ pub(super) unsafe fn relocate_vtor(scb: &mut SCB) {
     scb.vtor.write(vector_ram_ptr as u32);
 }
 
+pub(super) fn register_interrupt_handler(
+    vector_number: usize,
+    handler: unsafe extern "C" fn(),
+) {
+    let vector_ram_ptr = &raw mut __VECTOR_RAM as *mut _;
+    unsafe {
+        ptr::write(
+            (vector_ram_ptr as *mut unsafe extern "C" fn()).add(vector_number),
+            handler,
+        );
+    }
+}

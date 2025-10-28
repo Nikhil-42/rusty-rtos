@@ -23,8 +23,10 @@ use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 use core::{arch::asm, ptr::NonNull};
 
+use cortex_m::interrupt::InterruptNumber;
 use cortex_m::peripheral::scb::SystemHandler;
 use cortex_m::peripheral::syst::SystClkSource;
+use tm4c123x_hal::pac::{Interrupt, NVIC};
 
 const MAX_THREADS: usize = 6;
 const STACK_SIZE: usize = 512; // 2KB stack
@@ -174,6 +176,34 @@ impl G8torRtos {
         return Err(()); // No empty slot found
     }
 
+    pub fn add_atask(&mut self, irq: Interrupt, priority: u8, atask: extern "C" fn() ) -> Result<(), ()> {
+        if irq.number() >= self::aperiodic::NUM_IRQ as u16 {
+            return Err(()); // Invalid IRQ number
+        }
+
+        if irq.number() < self::aperiodic::NUM_EXCEPTIONS as u16 {
+            return Err(()); // Cannot use exception numbers
+        }
+
+        if priority > 6 || priority == 0 {
+            return Err(()); // Invalid priority
+        }
+
+        self::aperiodic::register_interrupt_handler(
+            irq.number() as usize,
+            atask,
+        );
+
+        // Enable the interrupt in the NVIC
+        let nvic = &mut self.peripherals.NVIC;
+        unsafe {
+            nvic.set_priority(irq, priority << 5);
+            NVIC::unmask(irq);
+        }
+        
+        return Ok(());
+    }
+
     fn take_atomic(&mut self) -> Result<G8torAtomicHandle, ()> {
         for index in 0..NUM_ATOMICS {
             if (self.atomic_mask & (1 << index)) == 0 {
@@ -261,8 +291,8 @@ impl G8torRtos {
                                                     // Core maps to the system clock (16 MHz in our case)
         syst.set_reload(PERIOD_US * TICKS_PER_US - 1); // 1 ms
         unsafe {
-            scb.set_priority(SystemHandler::SysTick, 0); // Highest priority
-            scb.set_priority(SystemHandler::PendSV, 0b11100000); // Lowest priority
+            scb.set_priority(SystemHandler::SysTick, 0 << 5); // Highest priority
+            scb.set_priority(SystemHandler::PendSV, 7 << 5); // Lowest priority
         };
         syst.enable_interrupt(); // Note: interrupts are still disabled globally
         syst.enable_counter();
