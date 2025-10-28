@@ -3,7 +3,6 @@
 #![allow(static_mut_refs)]
 
 use eel4745c::rtos::{self, G8torFifoHandle, G8torMutex, G8torMutexHandle, G8torRtosHandle};
-use core::fmt::Write as _;
 use eh0::{serial::{Read, Write}};
 use panic_halt as _;
 
@@ -54,10 +53,12 @@ static UART0_MUTEX: G8torMutex<
 extern "C" fn publisher(rtos: G8torRtosHandle) -> ! {
     let tx_fifo_handle = unsafe { UART0_TX_FIFO.as_ref().expect("UART0 TX FIFO handle is initialized.") };
 
-    loop {
+    for _ in 0..10 {
         rtos.write_fifo(tx_fifo_handle, rtos.tid() as u32);
         rtos.sleep_ms(1_000);
     }
+
+    rtos.kill();
 }
 
 extern "C" fn consumer(rtos: G8torRtosHandle) -> ! {
@@ -161,9 +162,6 @@ fn main() -> ! {
                 .expect("We haven't run out of atomics"),
         );
         let _ = inst
-            .add_thread(b"publish\0\0\0\0\0\0\0\0\0", 1, publisher)
-            .expect("Failed to add publisher thread");
-        let _ = inst
             .add_thread(b"consume\0\0\0\0\0\0\0\0\0", 0, consumer)
             .expect("Failed to add subscriber thread");
         let _ = inst
@@ -172,6 +170,9 @@ fn main() -> ! {
         let _ = inst
             .add_thread(b"uart_rx\0\0\0\0\0\0\0\0\0", 2, uart_rx)
             .expect("Failed to add uart_rx thread");
+        let _ = inst
+            .add_thread(b"publish\0\0\0\0\0\0\0\0\0", 1, publisher)
+            .expect("Failed to add publisher thread");
         inst.launch()
     }
 }
