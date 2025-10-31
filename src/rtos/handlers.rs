@@ -1,7 +1,7 @@
 use core::arch::{asm, naked_asm};
 use cortex_m_rt::{exception, ExceptionFrame};
 
-use super::{scheduler::_scheduler, syscall::_syscall, periodic::_run_periodics, G8TOR_RTOS};
+use super::{periodic::_run_periodics, scheduler::_scheduler, syscall::_syscall, G8TOR_RTOS};
 
 #[exception]
 unsafe fn HardFault(ef: &ExceptionFrame) -> ! {
@@ -91,24 +91,36 @@ unsafe extern "C" fn PendSV() {
 #[unsafe(naked)]
 unsafe extern "C" fn idle() {
     naked_asm!(
-        "1:",
-        "wfi",                  // Wait for interrupt
-        "b 1b",                 // Repeat
+        "1:", "wfi",  // Wait for interrupt
+        "b 1b", // Repeat
     )
 }
-static mut IDLE_FRAME: [u32; 8] = [
- 0xFFFFFFFF, // R0 (id = -1)
- 0x01010101, // R1
- 0x02020202, // R2
- 0x03030303, // R3
- 0x12121212, // R12
- 0x14141414, // R14 (LR)
- 0x00000000, // PC -- will be filled in with idle()
- 0x01000000, // xPSR
-]; // space for r4-r11, sp, lr
+
+#[repr(C, align(8))]
+struct IdleFrame {
+    r0: u32, // id = -1
+    r1: u32,
+    r2: u32,
+    r3: u32,
+    r12: u32,
+    lr: u32,   // Link register
+    pc: u32,   // Program counter
+    xpsr: u32, // Program status register
+}
+
+static mut IDLE_FRAME: IdleFrame = IdleFrame {
+    r0: 0xFFFFFFFF,   // R0 (id = -1)
+    r1: 0x01010101,   // R1
+    r2: 0x02020202,   // R2
+    r3: 0x03030303,   // R3
+    r12: 0x12121212,  // R12
+    lr: 0x14141414,   // R14 (LR)
+    pc: 0x00000000,   // PC -- will be filled in with idle()
+    xpsr: 0x01000000, // xPSR
+};
 pub fn init_idle() {
     unsafe {
-        IDLE_FRAME[6] = idle as u32;
+        IDLE_FRAME.pc = idle as u32;
     }
 }
 
