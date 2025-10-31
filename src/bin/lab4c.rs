@@ -2,8 +2,11 @@
 #![no_main]
 #![allow(static_mut_refs)]
 
-use eel4745c::rtos::{self, G8torFifoHandle, G8torMutex, G8torMutexHandle, G8torRtosHandle};
-use eh0::{serial::{Read, Write}};
+use eel4745c::{
+    rtos::{self, G8torFifoHandle, G8torMutex, G8torMutexHandle, G8torRtosHandle},
+    SyncUnsafeOnceCell,
+};
+use eh0::serial::{Read, Write};
 use panic_halt as _;
 
 use tm4c123x_hal::{
@@ -13,17 +16,17 @@ use tm4c123x_hal::{
         gpiof::{PF1, PF2},
         AlternateFunction, Output, PushPull, AF1,
     },
-    tm4c123x::{self as pac, UART0},
     prelude::*,
     serial::Serial,
+    tm4c123x::{self as pac, UART0},
 };
 
 use cortex_m_rt::entry;
 
-static mut R_LED_S: Option<PF1<Output<PushPull>>> = None;
-static mut B_LED_S: Option<PF2<Output<PushPull>>> = None;
+static mut R_LED_S: SyncUnsafeOnceCell<PF1<Output<PushPull>>> = SyncUnsafeOnceCell::new();
+static mut B_LED_S: SyncUnsafeOnceCell<PF2<Output<PushPull>>> = SyncUnsafeOnceCell::new();
 
-static mut UART0_HANDLE: Option<
+static UART0_HANDLE: SyncUnsafeOnceCell<
     G8torMutexHandle<
         Serial<
             UART0,
@@ -33,13 +36,9 @@ static mut UART0_HANDLE: Option<
             (),
         >,
     >,
-> = None;
-static mut UART0_TX_FIFO: Option<
-    G8torFifoHandle
-> = None;
-static mut UART0_RX_FIFO: Option<
-    G8torFifoHandle
-> = None;
+> = SyncUnsafeOnceCell::new();
+static UART0_TX_FIFO: SyncUnsafeOnceCell<G8torFifoHandle> = SyncUnsafeOnceCell::new();
+static UART0_RX_FIFO: SyncUnsafeOnceCell<G8torFifoHandle> = SyncUnsafeOnceCell::new();
 static UART0_MUTEX: G8torMutex<
     Serial<
         UART0,
@@ -51,7 +50,7 @@ static UART0_MUTEX: G8torMutex<
 > = G8torMutex::empty();
 
 extern "C" fn publisher(rtos: G8torRtosHandle) -> ! {
-    let tx_fifo_handle = unsafe { UART0_TX_FIFO.as_ref().expect("UART0 TX FIFO handle is initialized.") };
+    let tx_fifo_handle = &*UART0_TX_FIFO;
 
     for _ in 0..10 {
         rtos.write_fifo(tx_fifo_handle, rtos.tid() as u32);
@@ -62,7 +61,7 @@ extern "C" fn publisher(rtos: G8torRtosHandle) -> ! {
 }
 
 extern "C" fn consumer(rtos: G8torRtosHandle) -> ! {
-    let rx_fifo_handle = unsafe { UART0_RX_FIFO.as_ref().expect("UART0 RX FIFO handle is initialized.") };
+    let rx_fifo_handle = &*UART0_RX_FIFO;
 
     loop {
         let val = rtos.read_fifo(rx_fifo_handle);
@@ -77,8 +76,8 @@ extern "C" fn consumer(rtos: G8torRtosHandle) -> ! {
 }
 
 extern "C" fn uart_tx(rtos: G8torRtosHandle) -> ! {
-    let tx_fifo_handle = unsafe { UART0_TX_FIFO.as_ref().expect("UART0 TX FIFO handle is initialized.") };
-    let uart_handle = unsafe { UART0_HANDLE.as_ref().expect("UART0 handle is initialized.") };
+    let tx_fifo_handle = &*UART0_TX_FIFO;
+    let uart_handle = &*UART0_HANDLE;
 
     loop {
         let val = rtos.read_fifo(tx_fifo_handle);
@@ -88,15 +87,15 @@ extern "C" fn uart_tx(rtos: G8torRtosHandle) -> ! {
             rtos.release_mutex(uart_handle, UART0_MUTEX.release(uart));
             match res {
                 Ok(()) => break,
-                Err(nb::Error::WouldBlock) => {},
+                Err(nb::Error::WouldBlock) => {}
             };
         }
     }
 }
 
 extern "C" fn uart_rx(rtos: G8torRtosHandle) -> ! {
-    let rx_fifo_handle = unsafe { UART0_RX_FIFO.as_ref().expect("UART0 TX FIFO handle is initialized.") };
-    let uart_handle = unsafe { UART0_HANDLE.as_ref().expect("UART0 handle is initialized.") };
+    let rx_fifo_handle = &*UART0_RX_FIFO;
+    let uart_handle = &*UART0_HANDLE;
 
     loop {
         let uart = UART0_MUTEX.get(rtos.take_mutex(uart_handle));
@@ -104,7 +103,9 @@ extern "C" fn uart_rx(rtos: G8torRtosHandle) -> ! {
         rtos.release_mutex(uart_handle, UART0_MUTEX.release(uart));
         let val = match val {
             Ok(v) => v,
-            Err(nb::Error::WouldBlock) => { continue; }
+            Err(nb::Error::WouldBlock) => {
+                continue;
+            }
         };
         rtos.write_fifo(rx_fifo_handle, val as u32);
     }
@@ -145,42 +146,34 @@ fn main() -> ! {
         &sc.power_control,
     );
 
-    unsafe {
-        let _ = R_LED_S.insert(portf.pf1.into_push_pull_output());
-        let _ = B_LED_S.insert(portf.pf2.into_push_pull_output());
-        UART0_MUTEX.init(uart);
-    }
+    let inst = unsafe { rtos::G8torRtos::new(pac::CorePeripherals::take().unwrap()) };
+
+    let uart0_handle = inst
+        .init_mutex(&UART0_MUTEX)
+        .expect("We haven't run out of atomics");
+    let uart0_tx_fifo = inst.init_fifo().expect("We haven't run out of atomics");
+    let uart0_rx_fifo = inst.init_fifo().expect("We haven't run out of atomics");
+
+    inst.add_thread(b"consume\0\0\0\0\0\0\0\0\0", 0, consumer)
+        .expect("Failed to add subscriber thread");
+    inst.add_thread(b"uart_tx\0\0\0\0\0\0\0\0\0", 2, uart_tx)
+        .expect("Failed to add uart_tx thread");
+    inst.add_thread(b"uart_rx\0\0\0\0\0\0\0\0\0", 2, uart_rx)
+        .expect("Failed to add uart_rx thread");
+    inst.add_thread(b"publish\0\0\0\0\0\0\0\0\0", 1, publisher)
+        .expect("Failed to add publisher thread");
+    // let _ = inst
+    //     .add_periodic(2000, 0, periodic_task).expect("There is space in the Periodic Threads LL");
+    // let _ = inst
+    //     .add_periodic(1000, 1, periodic_task).expect("There is space in the Periodic Threads LL");
 
     unsafe {
-        let inst = rtos::G8torRtos::new(pac::CorePeripherals::take().unwrap());
-        UART0_HANDLE = Some(
-            inst.init_mutex(&UART0_MUTEX)
-                .expect("We haven't run out of atomics"),
-        );
-        UART0_TX_FIFO = Some(
-            inst.init_fifo()
-                .expect("We haven't run out of atomics"),
-        );
-        UART0_RX_FIFO = Some(
-            inst.init_fifo()
-                .expect("We haven't run out of atomics"),
-        );
-        let _ = inst
-            .add_thread(b"consume\0\0\0\0\0\0\0\0\0", 0, consumer)
-            .expect("Failed to add subscriber thread");
-        let _ = inst
-            .add_thread(b"uart_tx\0\0\0\0\0\0\0\0\0", 2, uart_tx)
-            .expect("Failed to add uart_tx thread");
-        let _ = inst
-            .add_thread(b"uart_rx\0\0\0\0\0\0\0\0\0", 2, uart_rx)
-            .expect("Failed to add uart_rx thread");
-        let _ = inst
-            .add_thread(b"publish\0\0\0\0\0\0\0\0\0", 1, publisher)
-            .expect("Failed to add publisher thread");
-        // let _ = inst
-        //     .add_periodic(2000, 0, periodic_task).expect("There is space in the Periodic Threads LL");
-        // let _ = inst
-        //     .add_periodic(1000, 1, periodic_task).expect("There is space in the Periodic Threads LL");
+        R_LED_S.set(portf.pf1.into_push_pull_output());
+        B_LED_S.set(portf.pf2.into_push_pull_output());
+        UART0_MUTEX.init(uart);
+        UART0_HANDLE.set(uart0_handle);
+        UART0_TX_FIFO.set(uart0_tx_fifo);
+        UART0_RX_FIFO.set(uart0_rx_fifo);
         inst.launch()
     }
 }

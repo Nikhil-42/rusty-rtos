@@ -6,7 +6,7 @@ use core::{iter, mem::MaybeUninit};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::fmt::Write as _;
 use cortex_m::delay;
-use eel4745c::SyncOnceCell;
+use eel4745c::SyncUnsafeOnceCell;
 
 use embedded_graphics::{prelude::*, mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder}, pixelcolor::Rgb565, text::Text, primitives::Rectangle};
 use mipidsi::Builder;
@@ -49,31 +49,31 @@ static SCREEN_MUTEX: G8torMutex<
     mipidsi::Display<display_interface_spi::SPIInterface<tm4c123x_hal::spi::Spi<SSI0, (tm4c123x_hal::gpio::gpioa::PA2<AlternateFunction<tm4c123x_hal::gpio::AF2, PushPull>>, tm4c123x_hal::gpio::gpioa::PA4<AlternateFunction<tm4c123x_hal::gpio::AF2, PushPull>>, tm4c123x_hal::gpio::gpioa::PA5<AlternateFunction<tm4c123x_hal::gpio::AF2, tm4c123x_hal::gpio::OpenDrain<Floating>>>)>, tm4c123x_hal::gpio::gpiof::PF3<tm4c123x_hal::gpio::Output<PushPull>>, tm4c123x_hal::gpio::gpiof::PF4<tm4c123x_hal::gpio::Output<PushPull>>>, mipidsi::models::ST7789, tm4c123x_hal::gpio::gpioe::PE0<tm4c123x_hal::gpio::Output<PushPull>>>
 > = G8torMutex::empty();
 
-static JOYSTICK_FIFO: SyncOnceCell<
+static JOYSTICK_FIFO: SyncUnsafeOnceCell<
     G8torFifoHandle
-> = SyncOnceCell::new();
-static SPAWNCOOR_FIFO: SyncOnceCell<
+> = SyncUnsafeOnceCell::new();
+static SPAWNCOOR_FIFO: SyncUnsafeOnceCell<
     G8torFifoHandle
-> = SyncOnceCell::new();
+> = SyncUnsafeOnceCell::new();
 
-static JOYSTICK_PUSH_SEM: SyncOnceCell<
+static JOYSTICK_PUSH_SEM: SyncUnsafeOnceCell<
     G8torSemaphoreHandle
-> = SyncOnceCell::new();
-static PCA9555_SEM: SyncOnceCell<
+> = SyncUnsafeOnceCell::new();
+static PCA9555_SEM: SyncUnsafeOnceCell<
     G8torSemaphoreHandle
-> = SyncOnceCell::new();
+> = SyncUnsafeOnceCell::new();
 
-static CAMERA_COORD_MUT: SyncOnceCell<
+static CAMERA_COORD_MUT: SyncUnsafeOnceCell<
     G8torMutexHandle<(f32, f32, f32)>
-> = SyncOnceCell::new();
-static SCREEN_MUT: SyncOnceCell<
+> = SyncUnsafeOnceCell::new();
+static SCREEN_MUT: SyncUnsafeOnceCell<
     G8torMutexHandle<mipidsi::Display<display_interface_spi::SPIInterface<tm4c123x_hal::spi::Spi<SSI0, (tm4c123x_hal::gpio::gpioa::PA2<AlternateFunction<tm4c123x_hal::gpio::AF2, PushPull>>, tm4c123x_hal::gpio::gpioa::PA4<AlternateFunction<tm4c123x_hal::gpio::AF2, PushPull>>, tm4c123x_hal::gpio::gpioa::PA5<AlternateFunction<tm4c123x_hal::gpio::AF2, tm4c123x_hal::gpio::OpenDrain<Floating>>>)>, tm4c123x_hal::gpio::gpiof::PF3<tm4c123x_hal::gpio::Output<PushPull>>, tm4c123x_hal::gpio::gpiof::PF4<tm4c123x_hal::gpio::Output<PushPull>>>, mipidsi::models::ST7789, tm4c123x_hal::gpio::gpioe::PE0<tm4c123x_hal::gpio::Output<PushPull>>>>
-> = SyncOnceCell::new();
+> = SyncUnsafeOnceCell::new();
 
 #[inline(never)]
 extern "C" fn cam_move(rtos: G8torRtosHandle) -> ! {
-    let joystick_fifo_handle = JOYSTICK_FIFO.get().expect("Joystick FIFO is initialized");
-    let cam_mutex = CAMERA_COORD_MUT.get().expect("Camera Coord Mutex is initialized");
+    let joystick_fifo_handle = &*JOYSTICK_FIFO;
+    let cam_mutex = &*CAMERA_COORD_MUT;
 
     loop {
         let joystick_val = rtos.read_fifo(joystick_fifo_handle);
@@ -101,8 +101,8 @@ extern "C" fn cam_move(rtos: G8torRtosHandle) -> ! {
 
 #[inline(never)]
 extern "C" fn cube_thread(rtos: G8torRtosHandle) -> ! {
-    let cam_mutex = CAMERA_COORD_MUT.get().expect("Camera Coord Mutex is initialized");
-    let screen_mutex = SCREEN_MUT.get().expect("Screen Mutex is initialized");
+    let cam_mutex = &*CAMERA_COORD_MUT;
+    let screen_mutex = &*SCREEN_MUT;
 
     // Draws and undraws a cube on the screen
     loop {
@@ -149,7 +149,7 @@ extern "C" fn read_buttons(rtos: G8torRtosHandle) -> ! {
 #[inline(never)]
 extern "C" fn read_joystick_press(rtos: G8torRtosHandle) -> ! {
     // Toggles the joystick flag to determine if Y-axis -> Y/Z
-    let joystick_push_sem = JOYSTICK_PUSH_SEM.get().expect("JOYSTICK_PUSH_SEM is initialized");
+    let joystick_push_sem = &*JOYSTICK_PUSH_SEM;
     loop {
         rtos.wait_semaphore(joystick_push_sem);
         unsafe { JOYSTICK_FLAG.fetch_xor(true, Ordering::SeqCst); }
@@ -267,32 +267,36 @@ fn main() -> ! {
         SCREEN_MUTEX.init(display);
     }
 
+    let inst = unsafe {
+        rtos::G8torRtos::new(core_p)
+    };
+
+    let joystick_fifo = inst.init_fifo().expect("We haven't run out of atomics");
+    let joystick_push_sem = inst.init_semaphore(0).expect("We haven't run out of atomics");
+
+    // inst.add_thread(b"cam_move\0\0\0\0\0\0\0\0", 1, cam_move).expect("TCB list has space");
+    inst.add_thread(b"read_buttons\0\0\0\0", 1, read_buttons).expect("TCB list has space");
+    inst.add_thread(b"read_joystick\0\0\0", 1, read_joystick_press).expect("TCB list has space");
+
+    inst.add_periodic(100, 1, print_world_coords).expect("Periodic TCB list has space");
+    // inst.add_periodic(100, 50, get_joystick).expect("Periodic TCB list has space");
+
+    inst.add_event(pac::interrupt::GPIOE, 5, gpioe_handler).expect("Inputs are correct");
+    // inst.add_event(pac::interrupt::GPIOD, 5, gpiod_handler).expect("Inputs are correct");
+
+    // let _ = inst
+    //     .add_thread(b"consume\0\0\0\0\0\0\0\0\0", 0, consumer)
+    //     .expect("Failed to add subscriber thread");
+    // let _ = inst
+    //     .add_thread(b"uart_tx\0\0\0\0\0\0\0\0\0", 2, uart_tx)
+    //     .expect("Failed to add uart_tx thread");
+    // let _ = inst
+    //     .add_periodic(2000, 0, periodic_task).expect("There is space in the Periodic Threads LL");
+    // let _ = inst
+    //     .add_periodic(1000, 1, periodic_task).expect("There is space in the Periodic Threads LL");
     unsafe {
-        let inst = rtos::G8torRtos::new(core_p);
-        JOYSTICK_FIFO.set(inst.init_fifo().expect("We haven't run out of atomics")).expect("JOYSTICK_FIFO is not initialized.");
-
-        JOYSTICK_PUSH_SEM.set(inst.init_semaphore(0).expect("We haven't run out of atomics")).expect("JOYSTICK_PUSH_SEM is not initialized");
-
-        // inst.add_thread(b"cam_move\0\0\0\0\0\0\0\0", 1, cam_move).expect("TCB list has space");
-        inst.add_thread(b"read_buttons\0\0\0\0", 1, read_buttons).expect("TCB list has space");
-        inst.add_thread(b"read_joystick\0\0\0", 1, read_joystick_press).expect("TCB list has space");
-
-        inst.add_periodic(100, 1, print_world_coords).expect("Periodic TCB list has space");
-        // inst.add_periodic(100, 50, get_joystick).expect("Periodic TCB list has space");
-
-        inst.add_event(pac::interrupt::GPIOE, 5, gpioe_handler).expect("Inputs are correct");
-        // inst.add_event(pac::interrupt::GPIOD, 5, gpiod_handler).expect("Inputs are correct");
-
-        // let _ = inst
-        //     .add_thread(b"consume\0\0\0\0\0\0\0\0\0", 0, consumer)
-        //     .expect("Failed to add subscriber thread");
-        // let _ = inst
-        //     .add_thread(b"uart_tx\0\0\0\0\0\0\0\0\0", 2, uart_tx)
-        //     .expect("Failed to add uart_tx thread");
-        // let _ = inst
-        //     .add_periodic(2000, 0, periodic_task).expect("There is space in the Periodic Threads LL");
-        // let _ = inst
-        //     .add_periodic(1000, 1, periodic_task).expect("There is space in the Periodic Threads LL");
+        JOYSTICK_FIFO.set(joystick_fifo);
+        JOYSTICK_PUSH_SEM.set(joystick_push_sem);
         inst.launch()
     }
 }
