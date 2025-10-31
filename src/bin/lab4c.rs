@@ -37,9 +37,9 @@ static mut UART0_HANDLE: Option<
 static mut UART0_TX_FIFO: Option<
     G8torFifoHandle
 > = None;
-// static mut UART0_RX_FIFO: Option<
-//     G8torFifoHandle
-// > = None;
+static mut UART0_RX_FIFO: Option<
+    G8torFifoHandle
+> = None;
 static UART0_MUTEX: G8torMutex<
     Serial<
         UART0,
@@ -50,7 +50,6 @@ static UART0_MUTEX: G8torMutex<
     >,
 > = G8torMutex::empty();
 
-#[inline(never)]
 extern "C" fn publisher(rtos: G8torRtosHandle) -> ! {
     let tx_fifo_handle = unsafe { UART0_TX_FIFO.as_ref().expect("UART0 TX FIFO handle is initialized.") };
 
@@ -62,57 +61,54 @@ extern "C" fn publisher(rtos: G8torRtosHandle) -> ! {
     rtos.kill();
 }
 
-// #[inline(never)]
-// extern "C" fn consumer(rtos: G8torRtosHandle) -> ! {
-//     let rx_fifo_handle = unsafe { UART0_RX_FIFO.as_ref().expect("UART0 RX FIFO handle is initialized.") };
+extern "C" fn consumer(rtos: G8torRtosHandle) -> ! {
+    let rx_fifo_handle = unsafe { UART0_RX_FIFO.as_ref().expect("UART0 RX FIFO handle is initialized.") };
 
-//     loop {
-//         let val = rtos.read_fifo(rx_fifo_handle);
-//         if rtos.kill_thread(val as usize) == 1 {
-//             // Failed to kill thread
-//             // Spawn a new publisher thread
-//             let mut buff = *b"publish\0\0\0\0\0\0\0\0\0";
-//             buff[7] = val as u8 + b'0';
-//             rtos.spawn_thread(&buff, 2, publisher);
-//         }
-//     }
-// }
+    loop {
+        let val = rtos.read_fifo(rx_fifo_handle);
+        if rtos.kill_thread(val as usize) == 1 {
+            // Failed to kill thread
+            // Spawn a new publisher thread
+            let mut buff = *b"publish\0\0\0\0\0\0\0\0\0";
+            buff[7] = val as u8 + b'0';
+            rtos.spawn_thread(&buff, 2, publisher);
+        }
+    }
+}
 
-// #[inline(never)]
-// extern "C" fn uart_tx(rtos: G8torRtosHandle) -> ! {
-//     let tx_fifo_handle = unsafe { UART0_TX_FIFO.as_ref().expect("UART0 TX FIFO handle is initialized.") };
-//     let uart_handle = unsafe { UART0_HANDLE.as_ref().expect("UART0 handle is initialized.") };
+extern "C" fn uart_tx(rtos: G8torRtosHandle) -> ! {
+    let tx_fifo_handle = unsafe { UART0_TX_FIFO.as_ref().expect("UART0 TX FIFO handle is initialized.") };
+    let uart_handle = unsafe { UART0_HANDLE.as_ref().expect("UART0 handle is initialized.") };
 
-//     loop {
-//         let val = rtos.read_fifo(tx_fifo_handle);
-//         loop {
-//             let uart = UART0_MUTEX.get(rtos.take_mutex(uart_handle));
-//             let res = uart.write(val as u8);
-//             rtos.release_mutex(uart_handle, UART0_MUTEX.release(uart));
-//             match res {
-//                 Ok(()) => break,
-//                 Err(nb::Error::WouldBlock) => {},
-//             };
-//         }
-//     }
-// }
+    loop {
+        let val = rtos.read_fifo(tx_fifo_handle);
+        loop {
+            let uart = UART0_MUTEX.get(rtos.take_mutex(uart_handle));
+            let res = uart.write(val as u8);
+            rtos.release_mutex(uart_handle, UART0_MUTEX.release(uart));
+            match res {
+                Ok(()) => break,
+                Err(nb::Error::WouldBlock) => {},
+            };
+        }
+    }
+}
 
-// #[inline(never)]
-// extern "C" fn uart_rx(rtos: G8torRtosHandle) -> ! {
-//     let rx_fifo_handle = unsafe { UART0_RX_FIFO.as_ref().expect("UART0 TX FIFO handle is initialized.") };
-//     let uart_handle = unsafe { UART0_HANDLE.as_ref().expect("UART0 handle is initialized.") };
+extern "C" fn uart_rx(rtos: G8torRtosHandle) -> ! {
+    let rx_fifo_handle = unsafe { UART0_RX_FIFO.as_ref().expect("UART0 TX FIFO handle is initialized.") };
+    let uart_handle = unsafe { UART0_HANDLE.as_ref().expect("UART0 handle is initialized.") };
 
-//     loop {
-//         let uart = UART0_MUTEX.get(rtos.take_mutex(uart_handle));
-//         let val = uart.read();
-//         rtos.release_mutex(uart_handle, UART0_MUTEX.release(uart));
-//         let val = match val {
-//             Ok(v) => v,
-//             Err(nb::Error::WouldBlock) => { continue; }
-//         };
-//         rtos.write_fifo(rx_fifo_handle, val as u32);
-//     }
-// }
+    loop {
+        let uart = UART0_MUTEX.get(rtos.take_mutex(uart_handle));
+        let val = uart.read();
+        rtos.release_mutex(uart_handle, UART0_MUTEX.release(uart));
+        let val = match val {
+            Ok(v) => v,
+            Err(nb::Error::WouldBlock) => { continue; }
+        };
+        rtos.write_fifo(rx_fifo_handle, val as u32);
+    }
+}
 
 // extern "C" fn periodic_task(_rtos: G8torRtosHandle) {
 //     cortex_m::asm::nop();
@@ -165,19 +161,19 @@ fn main() -> ! {
             inst.init_fifo()
                 .expect("We haven't run out of atomics"),
         );
-        // UART0_RX_FIFO = Some(
-        //     inst.init_fifo()
-        //         .expect("We haven't run out of atomics"),
-        // );
-        // let _ = inst
-        //     .add_thread(b"consume\0\0\0\0\0\0\0\0\0", 0, consumer)
-        //     .expect("Failed to add subscriber thread");
-        // let _ = inst
-        //     .add_thread(b"uart_tx\0\0\0\0\0\0\0\0\0", 2, uart_tx)
-        //     .expect("Failed to add uart_tx thread");
-        // let _ = inst
-        //     .add_thread(b"uart_rx\0\0\0\0\0\0\0\0\0", 2, uart_rx)
-        //     .expect("Failed to add uart_rx thread");
+        UART0_RX_FIFO = Some(
+            inst.init_fifo()
+                .expect("We haven't run out of atomics"),
+        );
+        let _ = inst
+            .add_thread(b"consume\0\0\0\0\0\0\0\0\0", 0, consumer)
+            .expect("Failed to add subscriber thread");
+        let _ = inst
+            .add_thread(b"uart_tx\0\0\0\0\0\0\0\0\0", 2, uart_tx)
+            .expect("Failed to add uart_tx thread");
+        let _ = inst
+            .add_thread(b"uart_rx\0\0\0\0\0\0\0\0\0", 2, uart_rx)
+            .expect("Failed to add uart_rx thread");
         let _ = inst
             .add_thread(b"publish\0\0\0\0\0\0\0\0\0", 1, publisher)
             .expect("Failed to add publisher thread");

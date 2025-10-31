@@ -52,7 +52,7 @@ pub struct G8torRtos {
     periodic: [Option<PeriodicTCB>; MAX_PERIODIC],
     atomics: [u8; NUM_ATOMICS],
     atomic_mask: u8,
-    fifos: [Option<G8torFifo<FIFO_SIZE>>; NUM_FIFO],
+    fifos: [Option<G8torFifo>; NUM_FIFO],
     stacks: MaybeUninit<[[u32; STACK_SIZE]; MAX_THREADS]>,
     peripherals: cortex_m::Peripherals,
 }
@@ -278,8 +278,6 @@ impl G8torRtos {
     }
 
     pub fn init_fifo(&mut self) -> Result<G8torFifoHandle, ()> {
-        let mutex_idx = self.take_atomic()?.indexp1.get() - 1;
-        self.atomics[mutex_idx as usize] = 1; // Mutex is initially unlocked
         let semaphore_idx = self.take_atomic()?.indexp1.get() - 1;
         self.atomics[semaphore_idx as usize] = 0; // Semaphore is initially empty
 
@@ -287,8 +285,9 @@ impl G8torRtos {
             if self.fifos[index].is_none() {
                 // Found an empty FIFO slot
                 self.fifos[index] = Some(G8torFifo::new(
-                    mutex_idx,
-                    semaphore_idx,
+                    G8torSemaphoreHandle {
+                        index: semaphore_idx as u8,
+                    },
                 ));
 
                 return Ok(G8torFifoHandle {
@@ -405,38 +404,19 @@ impl G8torRtosHandle {
     pub fn read_fifo(&self, handle: &G8torFifoHandle) -> u32 {
         // SAFTEY: We do not write to fifos ever after initialization
         let fifo = unsafe {  &(*G8TOR_RTOS.as_ptr()).fifos[handle.index as usize].as_ref() }.expect("FIFO should be initialized.");
-        let sem_handle = G8torSemaphoreHandle {
-            index: fifo.semaphore_idx,
-        };
 
-        let mutex_handle = G8torMutexHandle {
-            index: fifo.mutex_idx,
-            mutex: &fifo.internals,
-        };
-
-        self.wait_semaphore(&sem_handle);
-        let (lock, res) = fifo.read(self.take_mutex(&mutex_handle));
-        self.release_mutex(&mutex_handle, lock);
-        res
+        self.wait_semaphore(&fifo.semaphore_handle);
+        fifo.read()
     }
 
     pub fn write_fifo(&self, handle: &G8torFifoHandle, val: u32) {
         // SAFTEY: We do not write to fifos ever after initialization
         let fifo = unsafe {  &(*G8TOR_RTOS.as_ptr()).fifos[handle.index as usize] .as_ref().unwrap_unchecked() };
-        let sem_handle = G8torSemaphoreHandle {
-            index: fifo.semaphore_idx,
-        };
 
-        let mutex_handle = G8torMutexHandle {
-            index: fifo.mutex_idx,
-            mutex: &fifo.internals,
-        };
 
-        let lock = self.take_mutex(&mutex_handle);
-        let (lock, lost) = fifo.write(lock, val);
-        self.release_mutex(&mutex_handle, lock);
+        let lost = fifo.write(val);
         if !lost {
-            self.signal_semaphore(&sem_handle);
+            self.signal_semaphore(&fifo.semaphore_handle);
         }
     }
 

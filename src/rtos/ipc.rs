@@ -1,59 +1,78 @@
-use crate::rtos::{G8torMutex, G8torMutexLock};
+use core::{cell::UnsafeCell, sync::atomic::{AtomicU32, Ordering}};
+
+use crate::rtos::{FIFO_SIZE as LEN, G8torSemaphoreHandle};
 
 #[derive(Copy, Clone, Debug)]
 pub struct G8torFifoHandle {
     pub(super) index: u8,
 }
 
-pub(super) struct G8torFifoInternals<const LEN: usize> {
-    head: usize,
-    tail: usize,
-    lost: usize,
-    buffer: [u32; LEN],
+pub(super) struct G8torFifoInternals {
+    head: AtomicU32,
+    tail: AtomicU32,
+    lost: AtomicU32,
+    buffer: [UnsafeCell<u32>; LEN],
 }
 
-pub(super) struct G8torFifo<const LEN: usize> {
-    pub(super) internals: G8torMutex<G8torFifoInternals<LEN>>,
-    pub(super) semaphore_idx: u8,
-    pub(super) mutex_idx: u8,
+const MASK: u32 = const { 
+    assert!(LEN.is_power_of_two());
+    (LEN as u32) - 1
+};
+
+impl G8torFifoInternals {
+    pub fn write(&self, val: u32) -> bool {
+        let old_tail = self.tail.fetch_add(1, Ordering::AcqRel);
+        let idx = (old_tail & MASK) as usize;
+
+        // Write data into buffer slot (unsafe cell)
+        unsafe { self.buffer[idx].get().write(val); }
+
+        // Now check whether we've advanced past head by more than capacity
+        let head = self.head.load(Ordering::Acquire);
+        let len = (old_tail.wrapping_add(1)).wrapping_sub(head); // number of elements after this push
+        let lost = if len > (LEN as u32) {
+            // buffer overflow — advance head to drop the oldest element
+            self.head.fetch_add(1, Ordering::AcqRel);
+            self.lost.fetch_add(1, Ordering::Relaxed);
+            true
+        } else {
+            false
+        };
+
+        lost
+    }
+
+    /// Reads a value from the FIFO. Assumes that there is data available. Caller must ensure this.
+    pub fn read(&self) -> u32 {
+        let head = self.head.fetch_add(1, Ordering::AcqRel);
+        let idx = (head & MASK) as usize;
+        unsafe { self.buffer[idx].get().read() }
+    }
 }
 
-impl<const LEN: usize> G8torFifo<LEN> {
-    pub const fn new(mutex_idx: u8, semaphore_idx: u8) -> Self {
+pub(super) struct G8torFifo {
+    pub(super) internals: G8torFifoInternals,
+    pub(super) semaphore_handle: G8torSemaphoreHandle,
+}
+
+impl G8torFifo {
+    pub const fn new(semaphore_handle: G8torSemaphoreHandle) -> Self {
         G8torFifo {
-            internals: G8torMutex::new(G8torFifoInternals {
-                head: 0,
-                tail: 0,
-                lost: 0,
-                buffer: [0; LEN],
-            }),
-            semaphore_idx,
-            mutex_idx,
+            internals: G8torFifoInternals {
+                head: AtomicU32::new(0),
+                tail: AtomicU32::new(0),
+                lost: AtomicU32::new(0),
+                buffer: [const { UnsafeCell::new(0) }; LEN],
+            },
+            semaphore_handle,
         }
     }
 
-    pub fn read(&'static self, lock: G8torMutexLock<G8torFifoInternals<LEN>>) -> (G8torMutexLock<G8torFifoInternals<LEN>>, u32) {
-        let internals = self.internals.get(lock);
-        let val = internals.buffer[internals.head];
-        internals.head = (internals.head + 1) % LEN;
-        
-        let lock = self.internals.release(internals);
-        (lock, val)
+    pub fn read(&'static self) -> u32 {
+        self.internals.read()
     }
 
-    pub fn write(&'static self, lock: G8torMutexLock<G8torFifoInternals<LEN>>, val: u32) -> (G8torMutexLock<G8torFifoInternals<LEN>>, bool) {
-        let internals = self.internals.get(lock);
-        let next_tail = (internals.tail + 1) % LEN;
-
-        let lost = next_tail == internals.head;
-        if lost {
-            // Buffer full, drop oldest
-            internals.head = (internals.head + 1) % LEN;
-            internals.lost += 1;
-        }
-        internals.buffer[internals.tail] = val;
-        internals.tail = next_tail;
-
-        (self.internals.release(internals), lost)
+    pub fn write(&'static self, val: u32) -> bool {
+        self.internals.write(val)
     }
 }
