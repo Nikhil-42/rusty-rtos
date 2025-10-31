@@ -157,7 +157,7 @@ extern "C" fn read_joystick_press(rtos: G8torRtosHandle) -> ! {
 }
 
 #[inline(never)]
-extern "C" fn print_world_coords() {
+extern "C" fn print_world_coords(_rtos: G8torRtosHandle) {
     // Prints the current world coordinates of the camera every 100ms
     unsafe {
         let coords = CAMERA_COORD_MUTEX.steal();

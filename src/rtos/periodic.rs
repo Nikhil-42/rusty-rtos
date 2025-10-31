@@ -1,9 +1,11 @@
 use core::{marker::PhantomData, ptr::NonNull};
 
+use super::G8torRtosHandle;
+
 pub(super) struct PeriodicTCB {
     pub period: u32,
     pub execution_time: u32,
-    pub task: extern "C" fn(),
+    pub task: extern "C" fn(G8torRtosHandle),
     pub next: NonNull<PeriodicTCB>,
     pub prev: NonNull<PeriodicTCB>,
 }
@@ -49,7 +51,7 @@ pub(super) fn _run_periodics(rtos: &'static mut super::G8torRtos) {
     if let Some(ptcb) = rtos.periodic.iter_mut().find_map(|p| p.as_mut()) {
         for ptcb in ptcb.into_iter() {
             if rtos.system_time == ptcb.execution_time {
-                (ptcb.task)();
+                (ptcb.task)(G8torRtosHandle { id: usize::MAX });
                 ptcb.execution_time += ptcb.period;
             }
         }

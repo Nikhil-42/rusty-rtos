@@ -204,7 +204,7 @@ impl G8torRtos {
         return Ok(());
     }
 
-    pub fn add_periodic(&mut self, period: u32, execution_time: u32, task: extern "C" fn() ) -> Result<(), ()> {
+    pub fn add_periodic(&mut self, period: u32, execution_time: u32, task: extern "C" fn(G8torRtosHandle) ) -> Result<(), ()> {
         let id = self.periodic.iter().position(|p| p.is_none()).ok_or(())?;
 
         // Insert the new periodic TCB
@@ -326,7 +326,8 @@ impl G8torRtos {
                                                     // Core maps to the system clock (16 MHz in our case)
         syst.set_reload(PERIOD_US * TICKS_PER_US - 1); // 1 ms
         unsafe {
-            scb.set_priority(SystemHandler::SysTick, 0 << 5); // Highest priority
+            scb.set_priority(SystemHandler::SVCall, 0 << 5); // Highest priority
+            scb.set_priority(SystemHandler::SysTick, 1 << 5);
             scb.set_priority(SystemHandler::PendSV, 7 << 5); // Lowest priority
         };
         syst.enable_interrupt(); // Note: interrupts are still disabled globally
@@ -358,7 +359,6 @@ impl G8torRtos {
 #[repr(C)]
 pub struct G8torRtosHandle {
     id: usize,
-    _rtos: PhantomData<&'static G8torRtos>,
 }
 
 impl G8torRtosHandle {

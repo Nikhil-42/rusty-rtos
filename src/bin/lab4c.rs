@@ -52,7 +52,7 @@ static UART0_MUTEX: G8torMutex<
 extern "C" fn publisher(rtos: G8torRtosHandle) -> ! {
     let tx_fifo_handle = &*UART0_TX_FIFO;
 
-    for _ in 0..10 {
+    for _ in 0..20 {
         rtos.write_fifo(tx_fifo_handle, rtos.tid() as u32);
         rtos.sleep_ms(1_000);
     }
@@ -111,9 +111,10 @@ extern "C" fn uart_rx(rtos: G8torRtosHandle) -> ! {
     }
 }
 
-// extern "C" fn periodic_task(_rtos: G8torRtosHandle) {
-//     cortex_m::asm::nop();
-// }
+extern "C" fn periodic_task(rtos: G8torRtosHandle) {
+    let tx_fifo_handle = &*UART0_TX_FIFO;
+    rtos.write_fifo(tx_fifo_handle, 0xff);
+}
 
 #[entry]
 fn main() -> ! {
@@ -162,8 +163,8 @@ fn main() -> ! {
         .expect("Failed to add uart_rx thread");
     inst.add_thread(b"publish\0\0\0\0\0\0\0\0\0", 1, publisher)
         .expect("Failed to add publisher thread");
-    // let _ = inst
-    //     .add_periodic(2000, 0, periodic_task).expect("There is space in the Periodic Threads LL");
+    let _ = inst
+        .add_periodic(2000, 0, periodic_task).expect("There is space in the Periodic Threads LL");
     // let _ = inst
     //     .add_periodic(1000, 1, periodic_task).expect("There is space in the Periodic Threads LL");
 

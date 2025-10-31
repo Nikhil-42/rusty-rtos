@@ -24,16 +24,17 @@ const _: () = {
 unsafe extern "C" fn SysTick() {
     naked_asm!(
         "ldr r0, ={G8TOR_RTOS}",    // G8torRtos* r0 = &G8TOR_RTOS
-        // This is safe because no other code modifies system_time
-        // This also makes it always illegal to take a reference to G8TOR_RTOS
-        "ldr r1, [r0, #4]",         // u32 r1 = G8TOR_RTOS.system_time
-        "add r1, r1, #1",           // r1++
-        "str r1, [r0, #4]",         // G8TOR_RTOS.system_time = r1
 
         // Call periodic task runner
         "push {{r0, lr}}",              // Save lr
         "bl {PERIODIC_RUNNER}",         // _run_periodics(r0 = &G8TOR_RTOS)
         "pop {{r0, lr}}",               // Restore lr
+
+        // This is safe because no other code modifies system_time
+        // This also makes it always illegal to take a reference to G8TOR_RTOS
+        "ldr r1, [r0, #4]",         // u32 r1 = G8TOR_RTOS.system_time
+        "add r1, r1, #1",           // r1++
+        "str r1, [r0, #4]",         // G8TOR_RTOS.system_time = r1
 
         // Set the PENDSVSET bit to delay the context switch until after all
         // other interrupts have been serviced.
@@ -165,25 +166,27 @@ gen_syscall!(_syscall0;);
 #[unsafe(naked)]
 unsafe extern "C" fn SVCall() {
     naked_asm!(
-        "push {{r4, lr}}",
-        "mrs r4, psp",        // load PSP into r4
-        // r4 now contains the interrupted stack pointer
-        "ldr r1, [r4, #24]",    // Load the old PC into r1
+        "tst lr, #4",           // Check EXC_RETURN bit 2 SPSEL
+        "ite eq",
+        "mrseq r12, msp",       // Load PSP into r12
+        "mrsne r12, psp",       // Load MSP into r12
+        // r12 now contains the interrupted stack pointer
+        "ldr r1, [r12, #24]",   // Load the old PC into r1
         "ldrb r1, [r1, #-2]",   // Load the imm byte from instruction memory
+        "push {{r12, lr}}",       
         // r1 now contains the immediate value
+        // extern "C" syscall(r0: usize, r1, usize, r2: usize, r3: usize, imm: u8) -> (usize, usize)
         "sub sp, sp, #8",       // Args for the syscall
         "str r1, [sp, #0]",
-        "ldr r3, [r4, #12]",
-        "ldr r2, [r4, #8]",
-        "ldr r1, [r4, #4]",
-        "ldr r0, [r4, #0]",
-        // extern "C" syscall(r0: usize, r1, usize, r2: usize, r3: usize, imm: u8) -> (usize, usize)
+        "ldr r3, [r12, #12]",
+        "ldr r2, [r12, #8]",
+        "ldr r1, [r12, #4]",
+        "ldr r0, [r12, #0]",
         "bl {SYSCALL}",
-        // r0 and r1 contain return value
-        "str r0, [r4, #0]",     // Overwrite stacked frame with return
-        // "str r1, [r4, #4]",
         "add sp, sp, #8",       // Clean up syscall args
-        "pop {{r4, lr}}",
+        // r0 contains return value
+        "pop {{r12, lr}}",
+        "str r0, [r12, #0]",    // Overwrite stacked frame with return
         "bx lr",                // Return from SVC
         SYSCALL = sym _syscall
     );
