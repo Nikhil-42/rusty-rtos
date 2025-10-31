@@ -128,7 +128,7 @@ pub fn spawn_thread(
     rtos: *mut G8torRtos,
     name: &[u8; NAME_LEN],
     priority: u8,
-    thread: extern "C" fn(super::G8torRtosHandle) -> !,
+    thread: extern "C" fn(super::G8torThreadHandle) -> !,
 ) -> usize {
     // SAFETY: This is safe because we are in a critical section
     let rtos = unsafe { &mut *rtos };

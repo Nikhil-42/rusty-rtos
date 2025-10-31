@@ -24,12 +24,12 @@ pub(super) unsafe fn relocate_vtor(scb: &mut SCB) {
 
 pub(super) fn register_interrupt_handler(
     vector_number: usize,
-    handler: unsafe extern "C" fn(),
+    handler: extern "C" fn(),
 ) {
     let vector_ram_ptr = &raw mut __VECTOR_RAM as *mut _;
     unsafe {
         ptr::write(
-            (vector_ram_ptr as *mut unsafe extern "C" fn()).add(vector_number),
+            (vector_ram_ptr as *mut unsafe extern "C" fn()).add(vector_number + NUM_EXCEPTIONS),
             handler,
         );
     }

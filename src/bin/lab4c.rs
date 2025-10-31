@@ -3,7 +3,7 @@
 #![allow(static_mut_refs)]
 
 use eel4745c::{
-    rtos::{self, G8torFifoHandle, G8torMutex, G8torMutexHandle, G8torRtosHandle},
+    rtos::{self, G8torFifoHandle, G8torMutex, G8torMutexHandle, G8torThreadHandle},
     SyncUnsafeOnceCell,
 };
 use eh0::serial::{Read, Write};
@@ -49,42 +49,42 @@ static UART0_MUTEX: G8torMutex<
     >,
 > = G8torMutex::empty();
 
-extern "C" fn publisher(rtos: G8torRtosHandle) -> ! {
+extern "C" fn publisher(rtos: G8torThreadHandle) -> ! {
     let tx_fifo_handle = &*UART0_TX_FIFO;
 
     for _ in 0..20 {
-        rtos.write_fifo(tx_fifo_handle, rtos.tid() as u32);
-        rtos.sleep_ms(1_000);
+        rtos::write_fifo(tx_fifo_handle, rtos.tid() as u32);
+        rtos::sleep_ms(1_000);
     }
 
     rtos.kill();
 }
 
-extern "C" fn consumer(rtos: G8torRtosHandle) -> ! {
+extern "C" fn consumer(_rtos: G8torThreadHandle) -> ! {
     let rx_fifo_handle = &*UART0_RX_FIFO;
 
     loop {
-        let val = rtos.read_fifo(rx_fifo_handle);
-        if rtos.kill_thread(val as usize) == 1 {
+        let val = rtos::read_fifo(rx_fifo_handle);
+        if rtos::kill_thread(val as usize) == 1 {
             // Failed to kill thread
             // Spawn a new publisher thread
             let mut buff = *b"publish\0\0\0\0\0\0\0\0\0";
             buff[7] = val as u8 + b'0';
-            rtos.spawn_thread(&buff, 2, publisher);
+            rtos::spawn_thread(&buff, 2, publisher);
         }
     }
 }
 
-extern "C" fn uart_tx(rtos: G8torRtosHandle) -> ! {
+extern "C" fn uart_tx(_rtos: G8torThreadHandle) -> ! {
     let tx_fifo_handle = &*UART0_TX_FIFO;
     let uart_handle = &*UART0_HANDLE;
 
     loop {
-        let val = rtos.read_fifo(tx_fifo_handle);
+        let val = rtos::read_fifo(tx_fifo_handle);
         loop {
-            let uart = UART0_MUTEX.get(rtos.take_mutex(uart_handle));
+            let uart = UART0_MUTEX.get(rtos::take_mutex(uart_handle));
             let res = uart.write(val as u8);
-            rtos.release_mutex(uart_handle, UART0_MUTEX.release(uart));
+            rtos::release_mutex(uart_handle, UART0_MUTEX.release(uart));
             match res {
                 Ok(()) => break,
                 Err(nb::Error::WouldBlock) => {}
@@ -93,27 +93,27 @@ extern "C" fn uart_tx(rtos: G8torRtosHandle) -> ! {
     }
 }
 
-extern "C" fn uart_rx(rtos: G8torRtosHandle) -> ! {
+extern "C" fn uart_rx(_rtos: G8torThreadHandle) -> ! {
     let rx_fifo_handle = &*UART0_RX_FIFO;
     let uart_handle = &*UART0_HANDLE;
 
     loop {
-        let uart = UART0_MUTEX.get(rtos.take_mutex(uart_handle));
+        let uart = UART0_MUTEX.get(rtos::take_mutex(uart_handle));
         let val = uart.read();
-        rtos.release_mutex(uart_handle, UART0_MUTEX.release(uart));
+        rtos::release_mutex(uart_handle, UART0_MUTEX.release(uart));
         let val = match val {
             Ok(v) => v,
             Err(nb::Error::WouldBlock) => {
                 continue;
             }
         };
-        rtos.write_fifo(rx_fifo_handle, val as u32);
+        rtos::write_fifo(rx_fifo_handle, val as u32);
     }
 }
 
-extern "C" fn periodic_task(rtos: G8torRtosHandle) {
+extern "C" fn periodic_task() {
     let tx_fifo_handle = &*UART0_TX_FIFO;
-    rtos.write_fifo(tx_fifo_handle, 0xff);
+    rtos::write_fifo(tx_fifo_handle, 0xff);
 }
 
 #[entry]
@@ -165,8 +165,6 @@ fn main() -> ! {
         .expect("Failed to add publisher thread");
     let _ = inst
         .add_periodic(2000, 0, periodic_task).expect("There is space in the Periodic Threads LL");
-    // let _ = inst
-    //     .add_periodic(1000, 1, periodic_task).expect("There is space in the Periodic Threads LL");
 
     unsafe {
         R_LED_S.set(portf.pf1.into_push_pull_output());

@@ -11,10 +11,7 @@ use eel4745c::SyncUnsafeOnceCell;
 use embedded_graphics::{prelude::*, mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder}, pixelcolor::Rgb565, text::Text, primitives::Rectangle};
 use mipidsi::Builder;
 
-use eel4745c::rtos::{self, G8torFifoHandle, G8torMutex, G8torMutexHandle, G8torRtosHandle, G8torSemaphoreHandle};
-// use eh0::{serial::{Read, Write}};
-// use embedded_hal::digital::OutputPin as _;
-// use eh0::digital::OutputPin as _;
+use eel4745c::rtos::{self, G8torFifoHandle, G8torMutex, G8torMutexHandle, G8torThreadHandle, G8torSemaphoreHandle};
 use eh0::digital::v2::OutputPin as _;
 use panic_halt as _;
 
@@ -71,12 +68,12 @@ static SCREEN_MUT: SyncUnsafeOnceCell<
 > = SyncUnsafeOnceCell::new();
 
 #[inline(never)]
-extern "C" fn cam_move(rtos: G8torRtosHandle) -> ! {
+extern "C" fn cam_move(_rtos: G8torThreadHandle) -> ! {
     let joystick_fifo_handle = &*JOYSTICK_FIFO;
     let cam_mutex = &*CAMERA_COORD_MUT;
 
     loop {
-        let joystick_val = rtos.read_fifo(joystick_fifo_handle);
+        let joystick_val = rtos::read_fifo(joystick_fifo_handle);
         let x = (joystick_val & 0xFF) as u16;
         let y = ((joystick_val >> 8) & 0xFF) as u16;
 
@@ -89,42 +86,42 @@ extern "C" fn cam_move(rtos: G8torRtosHandle) -> ! {
         };
         
         // Move camera based on x and y
-        let cam_coords = CAMERA_COORD_MUTEX.get(rtos.take_mutex(cam_mutex));
+        let cam_coords = CAMERA_COORD_MUTEX.get(rtos::take_mutex(cam_mutex));
 
         cam_coords.0 += x;
         cam_coords.1 += y;
         cam_coords.2 += z;
 
-        rtos.release_mutex(cam_mutex, CAMERA_COORD_MUTEX.release(cam_coords));
+        rtos::release_mutex(cam_mutex, CAMERA_COORD_MUTEX.release(cam_coords));
     }
 }
 
 #[inline(never)]
-extern "C" fn cube_thread(rtos: G8torRtosHandle) -> ! {
+extern "C" fn cube_thread(_rtos: G8torThreadHandle) -> ! {
     let cam_mutex = &*CAMERA_COORD_MUT;
     let screen_mutex = &*SCREEN_MUT;
 
     // Draws and undraws a cube on the screen
     loop {
-        let cam_coords = CAMERA_COORD_MUTEX.get(rtos.take_mutex(cam_mutex));
+        let cam_coords = CAMERA_COORD_MUTEX.get(rtos::take_mutex(cam_mutex));
         let (x, y, z) = *cam_coords;
-        rtos.release_mutex(cam_mutex, CAMERA_COORD_MUTEX.release(cam_coords));
+        rtos::release_mutex(cam_mutex, CAMERA_COORD_MUTEX.release(cam_coords));
 
         let rect = Rectangle::new(Point::new((x * 10.0) as i32, (y * 10.0) as i32), Size::new(50, 50));
 
-        let screen = SCREEN_MUTEX.get(rtos.take_mutex(screen_mutex));
+        let screen = SCREEN_MUTEX.get(rtos::take_mutex(screen_mutex));
         screen.fill_contiguous(&rect, core::iter::repeat_with(|| Rgb565::WHITE).take((rect.size.width * rect.size.height) as usize)).unwrap();
-        rtos.release_mutex(screen_mutex, SCREEN_MUTEX.release(screen));
+        rtos::release_mutex(screen_mutex, SCREEN_MUTEX.release(screen));
 
         // Draw cube at (x, y, z)
-        rtos.sleep_ms(500);
+        rtos::sleep_ms(500);
         // Undraw cube
 
     }
 }
 
 #[inline(never)]
-extern "C" fn read_buttons(rtos: G8torRtosHandle) -> ! {
+extern "C" fn read_buttons(_rtos: G8torThreadHandle) -> ! {
     // Wait for PCA9555 Semaphore
     // Sleep
     // Chceck buttons
@@ -147,17 +144,17 @@ extern "C" fn read_buttons(rtos: G8torRtosHandle) -> ! {
 }
 
 #[inline(never)]
-extern "C" fn read_joystick_press(rtos: G8torRtosHandle) -> ! {
+extern "C" fn read_joystick_press(_rtos: G8torThreadHandle) -> ! {
     // Toggles the joystick flag to determine if Y-axis -> Y/Z
     let joystick_push_sem = &*JOYSTICK_PUSH_SEM;
     loop {
-        rtos.wait_semaphore(joystick_push_sem);
+        rtos::wait_semaphore(joystick_push_sem);
         unsafe { JOYSTICK_FLAG.fetch_xor(true, Ordering::SeqCst); }
     }
 }
 
 #[inline(never)]
-extern "C" fn print_world_coords(_rtos: G8torRtosHandle) {
+extern "C" fn print_world_coords() {
     // Prints the current world coordinates of the camera every 100ms
     unsafe {
         let coords = CAMERA_COORD_MUTEX.steal();
@@ -274,26 +271,16 @@ fn main() -> ! {
     let joystick_fifo = inst.init_fifo().expect("We haven't run out of atomics");
     let joystick_push_sem = inst.init_semaphore(0).expect("We haven't run out of atomics");
 
-    // inst.add_thread(b"cam_move\0\0\0\0\0\0\0\0", 1, cam_move).expect("TCB list has space");
+    inst.add_thread(b"cam_move\0\0\0\0\0\0\0\0", 1, cam_move).expect("TCB list has space");
     inst.add_thread(b"read_buttons\0\0\0\0", 1, read_buttons).expect("TCB list has space");
     inst.add_thread(b"read_joystick\0\0\0", 1, read_joystick_press).expect("TCB list has space");
 
     inst.add_periodic(100, 1, print_world_coords).expect("Periodic TCB list has space");
-    // inst.add_periodic(100, 50, get_joystick).expect("Periodic TCB list has space");
+    inst.add_periodic(100, 50, get_joystick).expect("Periodic TCB list has space");
 
     inst.add_event(pac::interrupt::GPIOE, 5, gpioe_handler).expect("Inputs are correct");
-    // inst.add_event(pac::interrupt::GPIOD, 5, gpiod_handler).expect("Inputs are correct");
+    inst.add_event(pac::interrupt::GPIOD, 5, gpiod_handler).expect("Inputs are correct");
 
-    // let _ = inst
-    //     .add_thread(b"consume\0\0\0\0\0\0\0\0\0", 0, consumer)
-    //     .expect("Failed to add subscriber thread");
-    // let _ = inst
-    //     .add_thread(b"uart_tx\0\0\0\0\0\0\0\0\0", 2, uart_tx)
-    //     .expect("Failed to add uart_tx thread");
-    // let _ = inst
-    //     .add_periodic(2000, 0, periodic_task).expect("There is space in the Periodic Threads LL");
-    // let _ = inst
-    //     .add_periodic(1000, 1, periodic_task).expect("There is space in the Periodic Threads LL");
     unsafe {
         JOYSTICK_FIFO.set(joystick_fifo);
         JOYSTICK_PUSH_SEM.set(joystick_push_sem);

@@ -1,27 +1,24 @@
+mod aperiodic;
 mod atomics;
 mod handlers;
 mod ipc;
-mod threads;
-mod syscall;
-mod scheduler;
-mod aperiodic;
 mod periodic;
+mod scheduler;
+mod syscall;
+mod threads;
 
 use crate::syscall;
 
-pub use self::atomics::{
-    G8torMutex, G8torMutexHandle, G8torMutexLock, G8torSemaphoreHandle,
-};
+pub use self::atomics::{G8torMutex, G8torMutexHandle, G8torMutexLock, G8torSemaphoreHandle};
 pub use self::ipc::G8torFifoHandle;
 
+use self::aperiodic::relocate_vtor;
 use self::atomics::G8torAtomicHandle;
 use self::handlers::init_idle;
 use self::ipc::G8torFifo;
-use self::threads::TCB;
-use self::aperiodic::relocate_vtor;
 use self::periodic::PeriodicTCB;
+use self::threads::TCB;
 
-use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 use core::{arch::asm, ptr::NonNull};
 
@@ -57,7 +54,6 @@ pub struct G8torRtos {
     peripherals: cortex_m::Peripherals,
 }
 
-
 impl G8torRtos {
     #[allow(static_mut_refs)]
     pub unsafe fn new(peripherals: cortex_m::Peripherals) -> &'static mut Self {
@@ -89,7 +85,7 @@ impl G8torRtos {
         &mut self,
         name: &[u8; NAME_LEN],
         priority: u8,
-        thread: extern "C" fn(G8torRtosHandle) -> !,
+        thread: extern "C" fn(G8torThreadHandle) -> !,
     ) -> Result<(), ()> {
         // Find an empty TCB slot
         let _self_ptr = self as *mut Self;
@@ -180,7 +176,12 @@ impl G8torRtos {
         return Err(()); // No empty slot found
     }
 
-    pub fn add_event(&mut self, irq: Interrupt, priority: u8, atask: extern "C" fn() ) -> Result<(), ()> {
+    pub fn add_event(
+        &mut self,
+        irq: Interrupt,
+        priority: u8,
+        atask: extern "C" fn(),
+    ) -> Result<(), ()> {
         if irq.number() >= self::aperiodic::NUM_IRQ as u16 {
             return Err(()); // Invalid IRQ number
         }
@@ -189,10 +190,7 @@ impl G8torRtos {
             return Err(()); // Invalid priority
         }
 
-        self::aperiodic::register_interrupt_handler(
-            irq.number() as usize,
-            atask,
-        );
+        self::aperiodic::register_interrupt_handler(irq.number() as usize, atask);
 
         // Enable the interrupt in the NVIC
         let nvic = &mut self.peripherals.NVIC;
@@ -200,11 +198,16 @@ impl G8torRtos {
             nvic.set_priority(irq, priority << 5);
             NVIC::unmask(irq);
         }
-        
+
         return Ok(());
     }
 
-    pub fn add_periodic(&mut self, period: u32, execution_time: u32, task: extern "C" fn(G8torRtosHandle) ) -> Result<(), ()> {
+    pub fn add_periodic(
+        &mut self,
+        period: u32,
+        execution_time: u32,
+        task: extern "C" fn(),
+    ) -> Result<(), ()> {
         let id = self.periodic.iter().position(|p| p.is_none()).ok_or(())?;
 
         // Insert the new periodic TCB
@@ -254,15 +257,10 @@ impl G8torRtos {
         Err(())
     }
 
-    pub fn init_semaphore(
-        &mut self,
-        initial_count: u8,
-    ) -> Result<G8torSemaphoreHandle, ()> {
+    pub fn init_semaphore(&mut self, initial_count: u8) -> Result<G8torSemaphoreHandle, ()> {
         let index = self.take_atomic()?.indexp1.get() - 1;
         self.atomics[index as usize] = initial_count;
-        Ok(G8torSemaphoreHandle {
-            index: index as u8,
-        })
+        Ok(G8torSemaphoreHandle { index: index as u8 })
     }
 
     pub fn init_mutex<T>(
@@ -284,15 +282,11 @@ impl G8torRtos {
         for index in 0..NUM_FIFO {
             if self.fifos[index].is_none() {
                 // Found an empty FIFO slot
-                self.fifos[index] = Some(G8torFifo::new(
-                    G8torSemaphoreHandle {
-                        index: semaphore_idx as u8,
-                    },
-                ));
+                self.fifos[index] = Some(G8torFifo::new(G8torSemaphoreHandle {
+                    index: semaphore_idx as u8,
+                }));
 
-                return Ok(G8torFifoHandle {
-                    index: index as u8,
-                });
+                return Ok(G8torFifoHandle { index: index as u8 });
             }
         }
 
@@ -357,80 +351,88 @@ impl G8torRtos {
 }
 
 #[repr(C)]
-pub struct G8torRtosHandle {
+pub struct G8torThreadHandle {
     id: usize,
 }
 
-impl G8torRtosHandle {
+pub fn yield_now() {
+    // Sleep for 0 ticks to yield the CPU
+    syscall!(0; 0);
+}
+
+pub fn sleep_ms(ms: usize) {
+    syscall!(0; ms);
+}
+
+pub fn wait_semaphore(sem: &G8torSemaphoreHandle) -> u8 {
+    syscall!(1; sem.index as usize) as u8
+}
+
+pub fn signal_semaphore(sem: &G8torSemaphoreHandle) -> u8 {
+    syscall!(2; sem.index as usize) as u8
+}
+
+pub fn take_mutex<T>(handle: &G8torMutexHandle<T>) -> G8torMutexLock<T> {
+    // Functionally the same as wait_semaphore
+    syscall!(1; handle.index as usize, u8::MAX as usize); // Never block on release mutex
+
+    // Successfully took the mutex
+    return G8torMutexLock {
+        mutex: handle.mutex,
+    };
+}
+
+pub fn release_mutex<T>(handle: &G8torMutexHandle<T>, lock: G8torMutexLock<T>) {
+    if core::ptr::addr_eq(handle.mutex, lock.mutex) {
+        syscall!(2; handle.index as usize, u8::MAX as usize); // Never block on release mutex
+    } else {
+        panic!("Attempted to release a mutex with a lock from a different mutex!");
+    }
+}
+
+pub fn read_fifo(handle: &G8torFifoHandle) -> u32 {
+    // SAFTEY: We do not write to fifos ever after initialization
+    let fifo = unsafe { &(*G8TOR_RTOS.as_ptr()).fifos[handle.index as usize].as_ref() }
+        .expect("FIFO should be initialized.");
+
+    wait_semaphore(&fifo.semaphore_handle);
+    fifo.read()
+}
+
+pub fn write_fifo(handle: &G8torFifoHandle, val: u32) {
+    // SAFTEY: We do not write to fifos ever after initialization
+    let fifo = unsafe {
+        &(*G8TOR_RTOS.as_ptr()).fifos[handle.index as usize]
+            .as_ref()
+            .unwrap_unchecked()
+    };
+
+    let lost = fifo.write(val);
+    if !lost {
+        signal_semaphore(&fifo.semaphore_handle);
+    }
+}
+
+pub fn spawn_thread(
+    name: &[u8; NAME_LEN],
+    priority: u8,
+    thread: extern "C" fn(G8torThreadHandle) -> !,
+) -> usize {
+    syscall!(254; name.as_ptr() as usize, priority as usize, thread as usize)
+}
+
+// Kill a thread by its ID (may not return if the running thread is killed)
+pub fn kill_thread(thread_id: usize) -> usize {
+    syscall!(255; thread_id)
+}
+
+impl G8torThreadHandle {
     pub const fn tid(&self) -> usize {
         self.id
-    }
-
-    pub fn yield_now(&self) {
-        // Sleep for 0 ticks to yield the CPU
-        syscall!(0; 0);
-    }
-
-    pub fn sleep_ms(&self, ms: usize) {
-        syscall!(0; ms);
-    }
-
-    pub fn wait_semaphore(&self, sem: &G8torSemaphoreHandle) -> u8 {
-        syscall!(1; sem.index as usize) as u8
-    }
-
-    pub fn signal_semaphore(&self, sem: &G8torSemaphoreHandle) -> u8 {
-        syscall!(2; sem.index as usize) as u8
-    }
-
-    pub fn take_mutex<T>(&self, handle: &G8torMutexHandle<T>) -> G8torMutexLock<T> {
-        // Functionally the same as wait_semaphore
-        syscall!(1; handle.index as usize, u8::MAX as usize); // Never block on release mutex
-
-        // Successfully took the mutex
-        return G8torMutexLock {
-            mutex: handle.mutex,
-        };
-    }
-
-    pub fn release_mutex<T>(&self, handle: &G8torMutexHandle<T>, lock: G8torMutexLock<T>) {
-        if core::ptr::addr_eq(handle.mutex, lock.mutex) {
-            syscall!(2; handle.index as usize, u8::MAX as usize); // Never block on release mutex
-        } else {
-            panic!("Attempted to release a mutex with a lock from a different mutex!");
-        }
-    }
-
-    pub fn read_fifo(&self, handle: &G8torFifoHandle) -> u32 {
-        // SAFTEY: We do not write to fifos ever after initialization
-        let fifo = unsafe {  &(*G8TOR_RTOS.as_ptr()).fifos[handle.index as usize].as_ref() }.expect("FIFO should be initialized.");
-
-        self.wait_semaphore(&fifo.semaphore_handle);
-        fifo.read()
-    }
-
-    pub fn write_fifo(&self, handle: &G8torFifoHandle, val: u32) {
-        // SAFTEY: We do not write to fifos ever after initialization
-        let fifo = unsafe {  &(*G8TOR_RTOS.as_ptr()).fifos[handle.index as usize] .as_ref().unwrap_unchecked() };
-
-
-        let lost = fifo.write(val);
-        if !lost {
-            self.signal_semaphore(&fifo.semaphore_handle);
-        }
-    }
-
-    pub fn spawn_thread(&self, name: &[u8; NAME_LEN], priority: u8, thread: extern "C" fn(G8torRtosHandle) -> !) -> usize {
-        syscall!(254; name.as_ptr() as usize, priority as usize, thread as usize)
     }
 
     pub fn kill(&self) -> ! {
         syscall!(255; self.id);
         unreachable!()
-    }
-     
-    // Kill a thread by its ID (may not return if the running thread is killed)
-    pub fn kill_thread(&self, thread_id: usize) -> usize {
-        syscall!(255; thread_id)
     }
 }
