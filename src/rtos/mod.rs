@@ -20,6 +20,7 @@ use self::periodic::PeriodicTCB;
 use self::threads::TCB;
 
 use core::mem::MaybeUninit;
+use core::sync::atomic::compiler_fence;
 use core::{arch::asm, ptr::NonNull};
 
 use cortex_m::interrupt::InterruptNumber;
@@ -376,6 +377,7 @@ pub fn signal_semaphore(sem: &G8torSemaphoreHandle) -> u8 {
 pub fn take_mutex<T>(handle: &G8torMutexHandle<T>) -> G8torMutexLock<T> {
     // Functionally the same as wait_semaphore
     syscall!(1; handle.index as usize, u8::MAX as usize); // Never block on release mutex
+    compiler_fence(core::sync::atomic::Ordering::SeqCst);
 
     // Successfully took the mutex
     return G8torMutexLock {
@@ -385,6 +387,7 @@ pub fn take_mutex<T>(handle: &G8torMutexHandle<T>) -> G8torMutexLock<T> {
 
 pub fn release_mutex<T>(handle: &G8torMutexHandle<T>, lock: G8torMutexLock<T>) {
     if core::ptr::addr_eq(handle.mutex, lock.mutex) {
+        compiler_fence(core::sync::atomic::Ordering::SeqCst);
         syscall!(2; handle.index as usize, u8::MAX as usize); // Never block on release mutex
     } else {
         panic!("Attempted to release a mutex with a lock from a different mutex!");

@@ -11,7 +11,7 @@ use eh0::serial::{Read as _, Write as _};
 use embedded_graphics::{
     pixelcolor::Rgb565,
 };
-use embedded_hal::{digital::OutputPin, i2c::I2c, spi::SpiBus};
+use embedded_hal::{digital::OutputPin, i2c::I2c};
 use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
 use embedded_graphics::{
     prelude::*,
@@ -25,17 +25,19 @@ use eel4745c::rtos::{
 };
 use panic_halt as _;
 
-use rand::{Rng, RngCore, SeedableRng};
+use rand::{Rng, SeedableRng};
+use tm4c123x_hal::adc::AdcSingle;
 use tm4c123x_hal::gpio::gpioa::{PA6, PA7};
+use tm4c123x_hal::gpio::gpioe::{PE2, PE3};
 use tm4c123x_hal::gpio::{
     gpioa::{PA2, PA4, PA5},
     gpioe::PE0,
     gpiof::{PF3, PF4},
     Floating, OpenDrain, Output, AF2,
 };
-use tm4c123x_hal::gpio::{PullUp, AF3};
+use tm4c123x_hal::gpio::{AF3, Analog, Input, PullUp};
 use tm4c123x_hal::i2c::I2C;
-use tm4c123x_hal::pac::I2C1;
+use tm4c123x_hal::pac::{ADC0, ADC1, I2C1};
 use tm4c123x_hal::spi::Spi;
 use tm4c123x_hal::{
     self as hal,
@@ -61,6 +63,18 @@ static mut UART0_S: MaybeUninit<
         (),
         (),
     >,
+> = MaybeUninit::uninit();
+static mut JOYSTICK_X_ADC: MaybeUninit<
+    AdcSingle<
+        ADC0,
+        PE3<Analog<Input<Floating>>>,
+    >
+> = MaybeUninit::uninit();
+static mut JOYSTICK_Y_ADC: MaybeUninit<
+    AdcSingle<
+        ADC1,
+        PE2<Analog<Input<Floating>>>,
+    >
 > = MaybeUninit::uninit();
 static KILL_CUBE: AtomicBool = AtomicBool::new(false);
 static CAMERA_COORD_MUTEX: G8torMutex<(f32, f32, f32)> = G8torMutex::empty();
@@ -142,18 +156,17 @@ static I2C_MUT: SyncUnsafeOnceCell<
 
 static mut SPI_BUFFER: [u8; 16] = [0; 16];
 
-#[inline(never)]
 extern "C" fn cam_move(_rtos: G8torThreadHandle) -> ! {
     let joystick_fifo_handle = &*JOYSTICK_FIFO;
     let cam_mutex = &*CAMERA_COORD_MUT;
 
     loop {
         let joystick_val = rtos::read_fifo(joystick_fifo_handle);
-        let x = (joystick_val & 0xFF) as u16;
-        let y = ((joystick_val >> 8) & 0xFF) as u16;
+        let x = (joystick_val & 0xFFFF) as u16;
+        let y = ((joystick_val >> 16) & 0xFFFF) as u16;
 
-        let x = x as f32 - 128.0 / 128.0;
-        let y = y as f32 - 128.0 / 128.0;
+        let x = (x as f32) / (0xFFF as f32) - 0.5;
+        let y = (y as f32) / (0xFFF as f32) - 0.5;
         let (y, z) = if JOYSTICK_FLAG.load(core::sync::atomic::Ordering::Relaxed) {
             (y, 0.0)
         } else {
@@ -171,7 +184,6 @@ extern "C" fn cam_move(_rtos: G8torThreadHandle) -> ! {
     }
 }
 
-#[inline(never)]
 extern "C" fn cube_thread(rtos: G8torThreadHandle) -> ! {
     let cam_mutex = &*CAMERA_COORD_MUT;
     let screen_mutex = &*SCREEN_MUT;
@@ -221,7 +233,6 @@ extern "C" fn cube_thread(rtos: G8torThreadHandle) -> ! {
     }
 }
 
-#[inline(never)]
 extern "C" fn read_buttons(_rtos: G8torThreadHandle) -> ! {
     let mut i2c = I2C_MUT.clone();
     let spawncoor_fifo = &*SPAWNCOOR_FIFO;
@@ -258,7 +269,6 @@ extern "C" fn read_buttons(_rtos: G8torThreadHandle) -> ! {
     }
 }
 
-#[inline(never)]
 extern "C" fn read_joystick(_rtos: G8torThreadHandle) -> ! {
     // Toggles the joystick flag to determine if Y-axis -> Y/Z
     let joystick_push_sem = &*JOYSTICK_PUSH_SEM;
@@ -268,7 +278,6 @@ extern "C" fn read_joystick(_rtos: G8torThreadHandle) -> ! {
     }
 }
 
-#[inline(never)]
 extern "C" fn print_world_coords() {
     // Prints the current world coordinates of the camera every 100ms
     unsafe {
@@ -283,9 +292,17 @@ extern "C" fn print_world_coords() {
     }
 }
 
-#[inline(never)]
 extern "C" fn get_joystick() {
     // Read the joystick ADC values and push to FIFO every 100ms
+    unsafe {
+        let x_adc = JOYSTICK_X_ADC.assume_init_mut();
+        let y_adc = JOYSTICK_Y_ADC.assume_init_mut();
+        let x_val = x_adc.read();
+        let y_val = y_adc.read();
+        let joystick_fifo_handle = &*JOYSTICK_FIFO;
+        let packed_val: u32 = ((y_val as u32) << 16) | (x_val as u32);
+        rtos::write_fifo(joystick_fifo_handle, packed_val);
+    }
 }
 
 // PORTE Interrupt Handler
@@ -329,7 +346,11 @@ fn main() -> ! {
     pe4.set_interrupt_mode(hal::gpio::InterruptMode::EdgeFalling);
 
     // Initialize Joystick ADCs
-    // let pe2, pe3
+    let pe3 = porte.pe3.into_floating_input().into_analog();
+    let pe2 = porte.pe2.into_floating_input().into_analog();
+
+    let adc_x = hal::adc::AdcSingle::adc0(p.ADC0, pe3, &sc.power_control);
+    let adc_y = hal::adc::AdcSingle::adc1(p.ADC1, pe2, &sc.power_control);
 
     // Enable Joystick Interrupt
     let mut pd2 = portd.pd2.into_pull_up_input();
@@ -454,8 +475,8 @@ fn main() -> ! {
         .init_mutex(&I2C_MUTEX)
         .expect("We haven't run out of atomics");
 
-    inst.add_thread(b"cam_move\0\0\0\0\0\0\0\0", 1, cam_move)
-        .expect("TCB list has space");
+    // inst.add_thread(b"cam_move\0\0\0\0\0\0\0\0", 1, cam_move)
+    //     .expect("TCB list has space");
     inst.add_thread(b"read_buttons\0\0\0\0", 1, read_buttons)
         .expect("TCB list has space");
     inst.add_thread(b"read_joystick\0\0\0", 1, read_joystick)
@@ -473,6 +494,9 @@ fn main() -> ! {
 
     unsafe {
         UART0_S.write(uart);
+        JOYSTICK_X_ADC.write(adc_x);
+        JOYSTICK_Y_ADC.write(adc_y);
+
         CAMERA_COORD_MUTEX.init((0.0, 0.0, 0.0));
         SCREEN_MUTEX.init(display);
         I2C_MUTEX.init(i2c);

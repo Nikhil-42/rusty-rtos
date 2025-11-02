@@ -148,7 +148,11 @@ macro_rules! syscall {
             ($r0:expr, $r1:expr, $r2:expr) => { crate::rtos::handlers::_syscall3::<$imm>($r0, $r1, $r2)  };
             ($r0:expr, $r1:expr, $r2:expr, $r3:expr) => { crate::rtos::handlers::_syscall4::<$imm>($r0, $r1, $r2, $r3)  };
         }
-        call!($($($arg),*)?)
+
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+        let v = call!($($($arg),*)?);
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+        v
     }};
 }
 
