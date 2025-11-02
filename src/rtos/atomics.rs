@@ -28,11 +28,21 @@ impl<'a, T> From<G8torMutexHandle<T>> for G8torAtomicHandle {
     }
 }
 
-#[derive(Copy, Clone)]
 pub struct G8torMutexHandle<T: 'static> {
     pub(super) index: u8,
     pub(super) mutex: &'static G8torMutex<T>,
 }
+
+impl<T> Clone for G8torMutexHandle<T> {
+    fn clone(&self) -> Self {
+        G8torMutexHandle {
+            index: self.index,
+            mutex: self.mutex,
+        }
+    }
+}
+
+impl<T> Copy for G8torMutexHandle<T> {}
 
 impl<T> core::fmt::Debug for G8torMutexHandle<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {

@@ -56,9 +56,13 @@ pub struct G8torRtos {
 
 impl G8torRtos {
     #[allow(static_mut_refs)]
-    pub unsafe fn new(peripherals: cortex_m::Peripherals) -> &'static mut Self {
+    pub unsafe fn new(mut peripherals: cortex_m::Peripherals) -> &'static mut Self {
         // Disable interrupts during initialization
         cortex_m::interrupt::disable();
+
+        // Move vtor to RAM
+        let scb = &mut peripherals.SCB;
+        relocate_vtor(scb);
 
         // SAFETY: We only write to G8TOR_RTOS here no reads
         // We are in a single-threaded context (no interrupts)
@@ -299,10 +303,6 @@ impl G8torRtos {
 
         // Configure the idle thread jump address
         init_idle();
-
-        // Move vtor to RAM
-        let scb = &mut self.peripherals.SCB;
-        relocate_vtor(scb);
 
         // Set the currently running thread to the first thread added
         self.running = match (*_self_ptr).threads[0].as_mut() {

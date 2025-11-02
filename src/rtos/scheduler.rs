@@ -1,7 +1,10 @@
+use core::ptr::NonNull;
+
 use super::{G8torRtos, TCB, NAME_LEN};
 
 // Executes in critical section so we have exclusive access to G8TOR_RTOS
-pub(super) unsafe extern "C" fn _scheduler(rtos: &mut G8torRtos) -> Option<&mut TCB<NAME_LEN>> {
+pub(super) unsafe extern "C" fn _scheduler(rtos: *mut G8torRtos) -> Option<NonNull<TCB<NAME_LEN>>> {
+    let rtos = &mut *rtos;
     let next_thread = if let Some(running) = rtos.running.as_mut() {
         // If there's a running thread, start searching from its next thread
         running.as_mut().next.as_mut()
@@ -49,5 +52,5 @@ pub(super) unsafe extern "C" fn _scheduler(rtos: &mut G8torRtos) -> Option<&mut 
         }
     }
 
-    return selected;
+    return core::mem::transmute(selected);
 }

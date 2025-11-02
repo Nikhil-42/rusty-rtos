@@ -15,9 +15,8 @@ use embedded_graphics::{
     primitives::Rectangle,
     text::Text,
 };
-use embedded_hal::{digital::OutputPin, spi::SpiBus};
+use embedded_hal::{digital::OutputPin, i2c::I2c, spi::SpiBus};
 use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
-use embedded_hal_bus::i2c::RefCellDevice;
 use mipidsi::Display;
 use mipidsi::{interface::SpiInterface, Builder};
 
@@ -26,7 +25,17 @@ use eel4745c::rtos::{
 };
 use panic_halt as _;
 
-use tm4c123x_hal::gpio::{Floating, OpenDrain, Output, AF2, gpioa::{PA2, PA4, PA5}, gpioe::PE0, gpiof::{PF3, PF4}};
+use rand::{RngCore, SeedableRng};
+use tm4c123x_hal::gpio::gpioa::{PA6, PA7};
+use tm4c123x_hal::gpio::{
+    gpioa::{PA2, PA4, PA5},
+    gpioe::PE0,
+    gpiof::{PF3, PF4},
+    Floating, OpenDrain, Output, AF2,
+};
+use tm4c123x_hal::gpio::{PullUp, AF3};
+use tm4c123x_hal::i2c::I2C;
+use tm4c123x_hal::pac::I2C1;
 use tm4c123x_hal::spi::Spi;
 use tm4c123x_hal::{
     self as hal,
@@ -76,6 +85,15 @@ static SCREEN_MUTEX: G8torMutex<
         PE0<Output<PushPull>>,
     >,
 > = G8torMutex::empty();
+static I2C_MUTEX: G8torMutex<
+    I2C<
+        I2C1,
+        (
+            PA6<AlternateFunction<AF3, PushPull>>,
+            PA7<AlternateFunction<AF3, OpenDrain<PullUp>>>,
+        ),
+    >,
+> = G8torMutex::empty();
 
 static JOYSTICK_FIFO: SyncUnsafeOnceCell<G8torFifoHandle> = SyncUnsafeOnceCell::new();
 static SPAWNCOOR_FIFO: SyncUnsafeOnceCell<G8torFifoHandle> = SyncUnsafeOnceCell::new();
@@ -109,6 +127,17 @@ static SCREEN_MUT: SyncUnsafeOnceCell<
         >,
     >,
 > = SyncUnsafeOnceCell::new();
+static I2C_MUT: SyncUnsafeOnceCell<
+    G8torMutexHandle<
+        I2C<
+            I2C1,
+            (
+                PA6<AlternateFunction<AF3, PushPull>>,
+                PA7<AlternateFunction<AF3, OpenDrain<PullUp>>>,
+            ),
+        >,
+    >,
+> = SyncUnsafeOnceCell::new();
 
 static mut SPI_BUFFER: [u8; 16] = [0; 16];
 
@@ -124,7 +153,7 @@ extern "C" fn cam_move(_rtos: G8torThreadHandle) -> ! {
 
         let x = x as f32 - 128.0 / 128.0;
         let y = y as f32 - 128.0 / 128.0;
-        let (y, z) = if unsafe { JOYSTICK_FLAG.load(core::sync::atomic::Ordering::Relaxed) } {
+        let (y, z) = if JOYSTICK_FLAG.load(core::sync::atomic::Ordering::Relaxed) {
             (y, 0.0)
         } else {
             (0.0, y)
@@ -145,6 +174,11 @@ extern "C" fn cam_move(_rtos: G8torThreadHandle) -> ! {
 extern "C" fn cube_thread(_rtos: G8torThreadHandle) -> ! {
     let cam_mutex = &*CAMERA_COORD_MUT;
     let screen_mutex = &*SCREEN_MUT;
+    let spawncoor_fifo = &*SPAWNCOOR_FIFO;
+
+    let coord_val = rtos::read_fifo(spawncoor_fifo);
+    let x = (coord_val >> 16) as u32;
+    let y = (coord_val & 0xFFFF) as u32;
 
     // Draws and undraws a cube on the screen
     loop {
@@ -153,7 +187,7 @@ extern "C" fn cube_thread(_rtos: G8torThreadHandle) -> ! {
         rtos::release_mutex(cam_mutex, CAMERA_COORD_MUTEX.release(cam_coords));
 
         let rect = Rectangle::new(
-            Point::new((x * 10.0) as i32, (y * 10.0) as i32),
+            Point::new(x as i32, (y * 10.0) as i32),
             Size::new(50, 50),
         );
 
@@ -161,7 +195,7 @@ extern "C" fn cube_thread(_rtos: G8torThreadHandle) -> ! {
         screen
             .fill_contiguous(
                 &rect,
-                core::iter::repeat_with(|| Rgb565::WHITE)
+                core::iter::repeat_with(|| Rgb565::GREEN)
                     .take((rect.size.width * rect.size.height) as usize),
             )
             .unwrap();
@@ -169,33 +203,46 @@ extern "C" fn cube_thread(_rtos: G8torThreadHandle) -> ! {
 
         // Draw cube at (x, y, z)
         rtos::sleep_ms(500);
+
         // Undraw cube
+        let screen = SCREEN_MUTEX.get(rtos::take_mutex(screen_mutex));
+        screen.fill_contiguous(
+            &rect, core::iter::repeat_with(|| Rgb565::BLACK)
+                .take((rect.size.width * rect.size.height) as usize),
+        ).unwrap();
+        rtos::release_mutex(screen_mutex, SCREEN_MUTEX.release(screen));
     }
 }
 
 #[inline(never)]
 extern "C" fn read_buttons(_rtos: G8torThreadHandle) -> ! {
-    // Wait for PCA9555 Semaphore
-    // Sleep
-    // Chceck buttons
+    let mut i2c = I2C_MUT.clone();
+    let spawncoor_fifo = &*SPAWNCOOR_FIFO;
+    let mut rand = rand::rngs::SmallRng::seed_from_u64(0x98958219);
+    let addr = 0x23;
 
-    // if SW1 pressed
-    // Spawn cube thread
-
-    // if SW2 pressed
-    // Kill cube thread if exists
     loop {
+        // Wait for button press (PCA9555 Semaphore)
         rtos::wait_semaphore(&*PCA9555_SEM);
         rtos::sleep_ms(10); // Debounce
-        
+        let mut val = [0u8; 1];
+        i2c.write_read(addr, &[0x00], &mut val).unwrap();
+        let val = val[0];
 
-        // let val = rtos.read_fifo(rx_fifo_handle);
-        // if rtos.kill_thread(val as usize) == 1 {
-        //     // Failed to kill thread
-        //     // Spawn a new publisher thread
-        //     let mut buff = *b"publish\0\0\0\0\0\0\0\0\0";
-        //     buff[7] = val as u8 + b'0';
-        //     rtos.spawn_thread(&buff, 2, publisher);
+        // SW1
+        if (val & 1 << 1) == 0 {
+            // Spawn cube thread
+            let buff = *b"cube_thread\0\0\0\0\0";
+            let x = rand.next_u32() % 256;
+            let y = rand.next_u32() % 256;
+            rtos::write_fifo(spawncoor_fifo, x << 16 | y);
+            let _ = rtos::spawn_thread(&buff, 2, cube_thread);
+        }
+
+        // // SW2
+        // if (val & 1 << 2) == 0 {
+        //     // Kill cube thread
+        //     let _ = rtos::kill_thread();
         // }
     }
 }
@@ -294,6 +341,26 @@ fn main() -> ! {
         &sc.power_control,
     );
 
+    // Activate I2C module
+    let i2c: I2C<
+        I2C1,
+        (
+            tm4c123x_hal::gpio::gpioa::PA6<AlternateFunction<AF3, PushPull>>,
+            tm4c123x_hal::gpio::gpioa::PA7<AlternateFunction<AF3, OpenDrain<PullUp>>>,
+        ),
+    > = I2C::<I2C1, _>::new(
+        p.I2C1,
+        (
+            porta.pa6.into_af_push_pull::<AF3>(&mut porta.control),
+            porta
+                .pa7
+                .into_af_open_drain::<AF3, PullUp>(&mut porta.control),
+        ),
+        100.khz(),
+        &clocks,
+        &sc.power_control,
+    );
+
     // Activate SPI module
     let spi = hal::spi::Spi::<SSI0, _>::spi0(
         p.SSI0,
@@ -356,8 +423,23 @@ fn main() -> ! {
     let inst = unsafe { rtos::G8torRtos::new(core_p) };
 
     let joystick_fifo = inst.init_fifo().expect("We haven't run out of atomics");
+    let spawncoor_fifo = inst.init_fifo().expect("We haven't run out of atomics");
+
     let joystick_push_sem = inst
         .init_semaphore(0)
+        .expect("We haven't run out of atomics");
+    let pca9555_sem = inst
+        .init_semaphore(0)
+        .expect("We haven't run out of atomics");
+
+    let camera_coord_mut = inst
+        .init_mutex(&CAMERA_COORD_MUTEX)
+        .expect("We haven't run out of atomics");
+    let screen_mut = inst
+        .init_mutex(&SCREEN_MUTEX)
+        .expect("We haven't run out of atomics");
+    let i2c_mut = inst
+        .init_mutex(&I2C_MUTEX)
         .expect("We haven't run out of atomics");
 
     inst.add_thread(b"cam_move\0\0\0\0\0\0\0\0", 1, cam_move)
@@ -367,21 +449,32 @@ fn main() -> ! {
     inst.add_thread(b"read_joystick\0\0\0", 1, read_joystick)
         .expect("TCB list has space");
 
-    inst.add_periodic(100, 1, print_world_coords)
+    inst.add_periodic(100, 0, print_world_coords)
         .expect("Periodic TCB list has space");
     inst.add_periodic(100, 50, get_joystick)
         .expect("Periodic TCB list has space");
 
-    inst.add_event(pac::interrupt::GPIOE, 5, button_isr)
-        .expect("Inputs are correct");
     inst.add_event(pac::interrupt::GPIOD, 5, joystick_click_isr)
+        .expect("Inputs are correct");
+    inst.add_event(pac::interrupt::GPIOE, 5, button_isr)
         .expect("Inputs are correct");
 
     unsafe {
         UART0_S.write(uart);
+        CAMERA_COORD_MUTEX.init((0.0, 0.0, 0.0));
         SCREEN_MUTEX.init(display);
+        I2C_MUTEX.init(i2c);
+
         JOYSTICK_FIFO.set(joystick_fifo);
+        SPAWNCOOR_FIFO.set(spawncoor_fifo);
+
         JOYSTICK_PUSH_SEM.set(joystick_push_sem);
+        PCA9555_SEM.set(pca9555_sem);
+
+        CAMERA_COORD_MUT.set(camera_coord_mut);
+        SCREEN_MUT.set(screen_mut);
+        I2C_MUT.set(i2c_mut);
+
         inst.launch()
     }
 }

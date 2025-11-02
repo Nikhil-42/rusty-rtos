@@ -14,6 +14,8 @@ fn GPIOD() {
     // (Implementation would go here)
     let portd = unsafe { &*pac::GPIO_PORTD::ptr() };
     portd.icr.write(|w| unsafe { w.gpio().bits(1 << 2) }); // Clear pin 2
+
+    
 }
 
 #[interrupt]
