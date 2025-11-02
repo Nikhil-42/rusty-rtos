@@ -1,5 +1,7 @@
 use core::{cell::UnsafeCell, sync::atomic::{AtomicU32, Ordering}};
 
+use embedded_hal::i2c::{ErrorType, I2c};
+
 use crate::rtos::{FIFO_SIZE as LEN, G8torSemaphoreHandle};
 
 #[derive(Copy, Clone, Debug)]
@@ -74,5 +76,62 @@ impl G8torFifo {
 
     pub fn write(&'static self, val: u32) -> bool {
         self.internals.write(val)
+    }
+}
+
+
+// Implement I2C for a Mutex that guards an I2C bus
+impl<T: I2c> ErrorType for super::G8torMutexHandle<T> {
+    type Error = T::Error;
+}
+
+impl<T: I2c> I2c for super::G8torMutexHandle<T> {
+    #[inline]
+    fn read(&mut self, address: u8, read: &mut [u8]) -> Result<(), Self::Error> {
+        let lock = super::take_mutex(self);
+        let bus = self.mutex.get(lock);
+        let res = bus.read(address, read);
+        let lock = self.mutex.release(bus);
+        super::release_mutex(&self, lock);
+        res
+    }
+
+    #[inline]
+    fn write(&mut self, address: u8, write: &[u8]) -> Result<(), Self::Error> {
+        let lock = super::take_mutex(&self);
+        let bus = self.mutex.get(lock);
+        let res = bus.write(address, write);
+        let lock = self.mutex.release(bus);
+        super::release_mutex(&self, lock);
+        res
+    }
+
+    #[inline]
+    fn write_read(
+        &mut self,
+        address: u8,
+        write: &[u8],
+        read: &mut [u8],
+    ) -> Result<(), Self::Error> {
+        let lock = super::take_mutex(&self);
+        let bus = self.mutex.get(lock);
+        let res = bus.write_read(address, write, read);
+        let lock = self.mutex.release(bus);
+        super::release_mutex(&self, lock);
+        res
+    }
+
+    #[inline]
+    fn transaction(
+        &mut self,
+        address: u8,
+        operations: &mut [embedded_hal::i2c::Operation<'_>],
+    ) -> Result<(), Self::Error> {
+        let lock = super::take_mutex(&self);
+        let bus = self.mutex.get(lock);
+        let res = bus.transaction(address, operations);
+        let lock = self.mutex.release(bus);
+        super::release_mutex(&self, lock);
+        res
     }
 }

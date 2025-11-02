@@ -25,7 +25,7 @@ use core::{arch::asm, ptr::NonNull};
 use cortex_m::interrupt::InterruptNumber;
 use cortex_m::peripheral::scb::SystemHandler;
 use cortex_m::peripheral::syst::SystClkSource;
-use tm4c123x_hal::tm4c123x::{Interrupt, NVIC};
+use tm4c123x_hal::pac::{Interrupt, NVIC};
 
 const MAX_THREADS: usize = 8;
 const MAX_PERIODIC: usize = 4;
@@ -392,8 +392,11 @@ pub fn release_mutex<T>(handle: &G8torMutexHandle<T>, lock: G8torMutexLock<T>) {
 
 pub fn read_fifo(handle: &G8torFifoHandle) -> u32 {
     // SAFTEY: We do not write to fifos ever after initialization
-    let fifo = unsafe { &(*G8TOR_RTOS.as_ptr()).fifos[handle.index as usize].as_ref() }
-        .expect("FIFO should be initialized.");
+    let fifo = unsafe {
+        (*const { &raw const (*G8TOR_RTOS.as_ptr()).fifos })[handle.index as usize]
+            .as_ref()
+            .unwrap_unchecked()
+    };
 
     wait_semaphore(&fifo.semaphore_handle);
     fifo.read()
@@ -402,7 +405,7 @@ pub fn read_fifo(handle: &G8torFifoHandle) -> u32 {
 pub fn write_fifo(handle: &G8torFifoHandle, val: u32) {
     // SAFTEY: We do not write to fifos ever after initialization
     let fifo = unsafe {
-        &(*G8TOR_RTOS.as_ptr()).fifos[handle.index as usize]
+        (*const { &raw const (*G8TOR_RTOS.as_ptr()).fifos })[handle.index as usize]
             .as_ref()
             .unwrap_unchecked()
     };

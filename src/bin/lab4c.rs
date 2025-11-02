@@ -6,7 +6,6 @@ use eel4745c::{
     rtos::{self, G8torFifoHandle, G8torMutex, G8torMutexHandle, G8torThreadHandle},
     SyncUnsafeOnceCell,
 };
-use eh0::serial::{Read, Write};
 use panic_halt as _;
 
 use tm4c123x_hal::{
@@ -18,10 +17,11 @@ use tm4c123x_hal::{
     },
     prelude::*,
     serial::Serial,
-    tm4c123x::{self as pac, UART0},
+    pac::{self, UART0},
 };
 
 use cortex_m_rt::entry;
+use eh0::serial::{Read as _, Write as _};
 
 static mut R_LED_S: SyncUnsafeOnceCell<PF1<Output<PushPull>>> = SyncUnsafeOnceCell::new();
 static mut B_LED_S: SyncUnsafeOnceCell<PF2<Output<PushPull>>> = SyncUnsafeOnceCell::new();
