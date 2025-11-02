@@ -2,12 +2,12 @@
 #![no_main]
 #![allow(static_mut_refs)]
 
+use core::arch::asm;
 use core::fmt::Write as _;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};
 use eel4745c::SyncUnsafeOnceCell;
 
-use eh0::serial::{Read as _, Write as _};
 use embedded_graphics::{
     pixelcolor::Rgb565,
 };
@@ -159,26 +159,29 @@ static mut SPI_BUFFER: [u8; 16] = [0; 16];
 extern "C" fn cam_move(_rtos: G8torThreadHandle) -> ! {
     let joystick_fifo_handle = &*JOYSTICK_FIFO;
     let cam_mutex = &*CAMERA_COORD_MUT;
+    let uart = unsafe { UART0_S.assume_init_mut() };
 
     loop {
-        let joystick_val = rtos::read_fifo(joystick_fifo_handle);
-        let x = (joystick_val & 0xFFFF) as u16;
-        let y = ((joystick_val >> 16) & 0xFFFF) as u16;
+        let joystick_val = core::hint::black_box(rtos::read_fifo(joystick_fifo_handle));
+        let x = core::hint::black_box((joystick_val & 0xFFFF) as u16);
+        let y = core::hint::black_box(((joystick_val >> 16) & 0xFFFF) as u16);
+        writeln!(uart, "Joystick X: {}, Y: {}", x, y).unwrap();
 
         let x = (x as f32) / (0xFFF as f32) - 0.5;
         let y = (y as f32) / (0xFFF as f32) - 0.5;
-        let (y, z) = if JOYSTICK_FLAG.load(core::sync::atomic::Ordering::Relaxed) {
-            (y, 0.0)
-        } else {
-            (0.0, y)
-        };
+        writeln!(uart, "Joystick X: {}, Y: {}", x, y).unwrap();
+        // let (y, z) = if JOYSTICK_FLAG.load(core::sync::atomic::Ordering::Relaxed) {
+        //     (y, 0.0)
+        // } else {
+        //     (0.0, y)
+        // };
 
         // Move camera based on x and y
         let cam_coords = CAMERA_COORD_MUTEX.get(rtos::take_mutex(cam_mutex));
 
-        cam_coords.0 += x;
-        cam_coords.1 += y;
-        cam_coords.2 += z;
+        cam_coords.0 += x; //x;
+        // cam_coords.1 += 0.1; //y;
+        // cam_coords.2 += 0.1; //z;
 
         rtos::release_mutex(cam_mutex, CAMERA_COORD_MUTEX.release(cam_coords));
     }
@@ -279,17 +282,17 @@ extern "C" fn read_joystick(_rtos: G8torThreadHandle) -> ! {
 }
 
 extern "C" fn print_world_coords() {
-    // Prints the current world coordinates of the camera every 100ms
-    unsafe {
-        let coords = CAMERA_COORD_MUTEX.steal();
-        let _ = writeln!(
-            UART0_S.assume_init_mut(),
-            "Camera World Coords: {}, {}, {}",
-            coords.0,
-            coords.1,
-            coords.2
-        );
-    }
+    // // Prints the current world coordinates of the camera every 100ms
+    // unsafe {
+    //     let coords = CAMERA_COORD_MUTEX.steal();
+    //     let _ = writeln!(
+    //         UART0_S.assume_init_mut(),
+    //         "Camera World Coords: {}, {}, {}",
+    //         coords.0,
+    //         coords.1,
+    //         coords.2
+    //     );
+    // }
 }
 
 extern "C" fn get_joystick() {
@@ -327,6 +330,12 @@ extern "C" fn joystick_click_isr() {
 
 #[entry]
 fn main() -> ! {
+    unsafe { asm!(
+        "mov r12, sp",  
+        "vstmdb r12!, {{s16-s31}}",   // Save FPU registers if needed
+        "vldmia r12!, {{s16-s31}}",   // Restore FPU registers if needed
+    )};
+
     let p = pac::Peripherals::take().unwrap();
 
     let mut sc = p.SYSCTL.constrain();
@@ -475,8 +484,8 @@ fn main() -> ! {
         .init_mutex(&I2C_MUTEX)
         .expect("We haven't run out of atomics");
 
-    // inst.add_thread(b"cam_move\0\0\0\0\0\0\0\0", 1, cam_move)
-    //     .expect("TCB list has space");
+    inst.add_thread(b"cam_move\0\0\0\0\0\0\0\0", 1, cam_move)
+        .expect("TCB list has space");
     inst.add_thread(b"read_buttons\0\0\0\0", 1, read_buttons)
         .expect("TCB list has space");
     inst.add_thread(b"read_joystick\0\0\0", 1, read_joystick)

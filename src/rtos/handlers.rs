@@ -53,16 +53,19 @@ unsafe extern "C" fn SysTick() {
 #[unsafe(naked)]
 unsafe extern "C" fn PendSV() {
     naked_asm!(
-        "cpsid i",              // Begin critical section
+        "cpsid i",                      // Begin critical section
         // check if there is a running thread
-        "ldr r0, ={G8TOR_RTOS}",  // G8torRtos* r0 = &G8TOR_RTOS
+        "ldr r0, ={G8TOR_RTOS}",        // G8torRtos* r0 = &G8TOR_RTOS
         "ldr r1, [r0, {G8torRtos_running}]",     // TCB* r1 = G8TOR_RTOS.running
-        "cbz r1, 1f",           // if (r1 == null) don't save context
+        "cbz r1, 1f",                   // if (r1 == null) don't save context
         // G8TOR_RTOS.running is not null, save its context
-        "mrs r12, psp",         // Get process stack pointer
-        "stmdb r12!, {{r4-r11}}",      // Save callee-saved registers (for the current thread)
-        "str r12, [r1, {TCB_sp}]",     // u32* r1->sp = sp
-        "strb lr, [r1, {TCB_lr}]",     // u8 r1->lr = lr
+        "mrs r12, psp",                 // Get process stack pointer
+        "tst lr, #(1 << 4)",            // Check EXC_RETURN bit 4 (FPU context)
+        "it eq",                        // If FPU context is present
+        "vstmdb r12!, {{s16-s31}}",   // Save FPU registers if needed
+        "stmdb r12!, {{r4-r11}}",       // Save callee-saved registers (for the current thread)
+        "str r12, [r1, {TCB_sp}]",      // u32* r1->sp = sp
+        "strb lr, [r1, {TCB_lr}]",      // u8 r1->lr = lr
 
         // Call scheduler to select the next thread to run
         "1:",
@@ -76,9 +79,12 @@ unsafe extern "C" fn PendSV() {
         "cbz r1, 1f",           // if (r1 == null) skip context restore
 
         // There is a thread to run, restore its context
-        "ldr r12, [r1, {TCB_sp}]",    // u32* sp = r1->sp
         "ldrsb lr, [r1, {TCB_lr}]",    // u8 lr = r1->lr
-        "ldm r12!, {{r4-r11}}",       // Restore callee-saved registers (for the new thread)
+        "ldr r12, [r1, {TCB_sp}]",    // u32* sp = r1->sp
+        "ldmia r12!, {{r4-r11}}",       // Restore callee-saved registers (for the new thread)
+        "tst lr, #(1 << 4)",            // Check EXC_RETURN bit 4 (FPU context)
+        "it eq",                        // If FPU context is present
+        "vldmia r12!, {{s16-s31}}",   // Restore FPU registers if needed
         "msr psp, r12",         // Set PSP to frame
         "cpsie i",              // End critical section
         "bx lr",                // Return from PendSV

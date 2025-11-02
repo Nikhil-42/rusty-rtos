@@ -367,10 +367,13 @@ pub fn sleep_ms(ms: usize) {
 }
 
 pub fn wait_semaphore(sem: &G8torSemaphoreHandle) -> u8 {
-    syscall!(1; sem.index as usize) as u8
+    let val = syscall!(1; sem.index as usize) as u8;
+    compiler_fence(core::sync::atomic::Ordering::SeqCst);
+    val
 }
 
 pub fn signal_semaphore(sem: &G8torSemaphoreHandle) -> u8 {
+    compiler_fence(core::sync::atomic::Ordering::SeqCst);
     syscall!(2; sem.index as usize) as u8
 }
 
@@ -430,6 +433,7 @@ pub fn spawn_thread(
 
 // Kill a thread by its ID (may not return if the running thread is killed)
 pub fn kill_thread(thread_id: usize) -> usize {
+    compiler_fence(core::sync::atomic::Ordering::SeqCst);
     syscall!(255; thread_id)
 }
 

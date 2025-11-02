@@ -5,7 +5,7 @@ use panic_semihosting as _;
 
 use core::fmt::Write;
 use cortex_m_rt::entry;
-use tm4c123x_hal::{self as hal, pac::{self, GPIO_PORTE, NVIC}, prelude::*};
+use tm4c123x_hal::{self as hal, pac::{self, NVIC}, prelude::*};
 use pac::interrupt;
 
 #[interrupt]
