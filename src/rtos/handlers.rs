@@ -1,4 +1,4 @@
-use core::arch::{asm, naked_asm};
+use core::{arch::{asm, naked_asm}, mem::offset_of};
 use cortex_m_rt::{exception, ExceptionFrame};
 
 use super::{periodic::_run_periodics, scheduler::_scheduler, syscall::_syscall, G8TOR_RTOS};
@@ -32,9 +32,9 @@ unsafe extern "C" fn SysTick() {
 
         // This is safe because no other code modifies system_time
         // This also makes it always illegal to take a reference to G8TOR_RTOS
-        "ldr r1, [r0, #4]",         // u32 r1 = G8TOR_RTOS.system_time
+        "ldr r1, [r0, {G8torRtos_system_time}]",         // u32 r1 = G8TOR_RTOS.system_time
         "add r1, r1, #1",           // r1++
-        "str r1, [r0, #4]",         // G8TOR_RTOS.system_time = r1
+        "str r1, [r0, {G8torRtos_system_time}]",         // G8TOR_RTOS.system_time = r1
 
         // Set the PENDSVSET bit to delay the context switch until after all
         // other interrupts have been serviced.
@@ -44,6 +44,7 @@ unsafe extern "C" fn SysTick() {
 
         "bx lr",
         G8TOR_RTOS = sym G8TOR_RTOS,
+        G8torRtos_system_time = const offset_of!(super::G8torRtos, system_time),
         PERIODIC_RUNNER = sym _run_periodics
     )
 }
@@ -55,12 +56,13 @@ unsafe extern "C" fn PendSV() {
         "cpsid i",              // Begin critical section
         // check if there is a running thread
         "ldr r0, ={G8TOR_RTOS}",  // G8torRtos* r0 = &G8TOR_RTOS
-        "ldr r1, [r0, #0]",     // TCB* r1 = G8TOR_RTOS.running
+        "ldr r1, [r0, {G8torRtos_running}]",     // TCB* r1 = G8TOR_RTOS.running
         "cbz r1, 1f",           // if (r1 == null) don't save context
         // G8TOR_RTOS.running is not null, save its context
         "mrs r12, psp",         // Get process stack pointer
         "stmdb r12!, {{r4-r11}}",      // Save callee-saved registers (for the current thread)
-        "str r12, [r1, #4]",     // u32* r1->sp = sp
+        "str r12, [r1, {TCB_sp}]",     // u32* r1->sp = sp
+        "strb lr, [r1, {TCB_lr}]",     // u8 r1->lr = lr
 
         // Call scheduler to select the next thread to run
         "1:",
@@ -68,23 +70,33 @@ unsafe extern "C" fn PendSV() {
         "bl {SCHEDULER}",       // Call scheduler(r0 = *G8torRtos) => returns TCB* in r0
         "mov r1, r0",           // TCB* r1 = return value from scheduler
         "pop {{r0, lr}}",       // Restore G8torRtos* r0 from stack (and lr for alignment)
-        "str r1, [r0, #0]",     // G8TOR_RTOS.running = r1
+        "str r1, [r0, {G8torRtos_running}]",     // G8TOR_RTOS.running = r1
 
         // r1 may be null if no thread is ready to run
-        "cmp r1, #0",           // Compare with null
-        "itte ne",             // if-then-then-then-else for next 4 instructions
+        "cbz r1, 1f",           // if (r1 == null) skip context restore
+
         // There is a thread to run, restore its context
-        "ldrne r12, [r1, #4]",     // u32* sp = r1->sp
-        "ldmne r12!, {{r4-r11}}",       // Restore callee-saved registers (for the new thread)
+        "ldr r12, [r1, {TCB_sp}]",    // u32* sp = r1->sp
+        "ldrsb lr, [r1, {TCB_lr}]",    // u8 lr = r1->lr
+        "ldm r12!, {{r4-r11}}",       // Restore callee-saved registers (for the new thread)
+        "msr psp, r12",         // Set PSP to frame
+        "cpsie i",              // End critical section
+        "bx lr",                // Return from PendSV
+
         // No thread to run, enter low-power idle state
-        "ldreq r12, ={IDLE_FRAME}", // Load address of idle frame
+        "1:",
+        "ldr r12, ={IDLE_FRAME}",     // Load address of idle frame
+        "ldr lr, =0xFFFFFFFD", // Load LR for idle frame
         "msr psp, r12",         // Set PSP to frame
         "cpsie i",              // Enable interrupts
         "bx lr",                // Return from PendSV
 
         G8TOR_RTOS = sym G8TOR_RTOS,
+        G8torRtos_running = const offset_of!(super::G8torRtos, running),
         SCHEDULER = sym _scheduler,
-        IDLE_FRAME = sym IDLE_FRAME
+        IDLE_FRAME = sym IDLE_FRAME,
+        TCB_sp = const offset_of!(super::TCB, sp),
+        TCB_lr = const offset_of!(super::TCB, lr),
     );
 }
 

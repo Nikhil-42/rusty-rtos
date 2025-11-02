@@ -25,7 +25,7 @@ use eel4745c::rtos::{
 };
 use panic_halt as _;
 
-use rand::{RngCore, SeedableRng};
+use rand::{Rng, RngCore, SeedableRng};
 use tm4c123x_hal::gpio::gpioa::{PA6, PA7};
 use tm4c123x_hal::gpio::{
     gpioa::{PA2, PA4, PA5},
@@ -173,22 +173,30 @@ extern "C" fn cam_move(_rtos: G8torThreadHandle) -> ! {
 
 #[inline(never)]
 extern "C" fn cube_thread(rtos: G8torThreadHandle) -> ! {
-    // let cam_mutex = &*CAMERA_COORD_MUT;
+    let cam_mutex = &*CAMERA_COORD_MUT;
     let screen_mutex = &*SCREEN_MUT;
     let spawncoor_fifo = &*SPAWNCOOR_FIFO;
 
-    let coord_val = rtos::read_fifo(spawncoor_fifo);
-    let x = (coord_val >> 16) as i32;
-    let y = (coord_val & 0xFFFF) as i32;
+    let x = f32::from_bits(rtos::read_fifo(spawncoor_fifo));
+    let y = f32::from_bits(rtos::read_fifo(spawncoor_fifo));
+    let z = f32::from_bits(rtos::read_fifo(spawncoor_fifo));
 
     // Draws and undraws a cube on the screen
     loop {
-        // let cam_coords = CAMERA_COORD_MUTEX.get(rtos::take_mutex(cam_mutex));
-        // let (x, y, z) = *cam_coords;
-        // rtos::release_mutex(cam_mutex, CAMERA_COORD_MUTEX.release(cam_coords));
+        let cam_coords = CAMERA_COORD_MUTEX.get(rtos::take_mutex(cam_mutex));
+        let (cam_x, cam_y, cam_z) = *cam_coords;
+        rtos::release_mutex(cam_mutex, CAMERA_COORD_MUTEX.release(cam_coords));
 
+        // Draw a cube at (x, y, z) relative to camera position
+        // let rel_x = x - cam_x;
+        // let rel_y = y - cam_y;
+        // let rel_z = z - cam_z;
+
+        // Project to 2D screen coordinates (simple perspective projection)
+        let screen_x = (x + 120.0) as i32;
+        let screen_y = (y + 160.0) as i32;
         let rect = Rectangle::new(
-            Point::new(x, y),
+            Point::new(screen_x as i32, screen_y as i32),
             Size::new(50, 50),
         );
         let rect_styled = rect.into_styled(PrimitiveStyle::with_stroke(Rgb565::GREEN, 1));
@@ -231,10 +239,14 @@ extern "C" fn read_buttons(_rtos: G8torThreadHandle) -> ! {
         // SW1
         if (val & 1 << 1) == 0 {
             // Spawn cube thread
+            KILL_CUBE.store(false, Ordering::Relaxed);  // Don't kill immediately
             let buff = *b"cube_thread\0\0\0\0\0";
-            let x = rand.next_u32() % 256;
-            let y = rand.next_u32() % 256;
-            rtos::write_fifo(spawncoor_fifo, x << 16 | y);
+            let x: f32 = rand.random_range(-100.0..100.0);
+            let y: f32 = rand.random_range(-100.0..100.0);
+            let z: f32 = rand.random_range(-100.0..100.0);
+            rtos::write_fifo(spawncoor_fifo, f32::to_bits(x));
+            rtos::write_fifo(spawncoor_fifo, f32::to_bits(y));
+            rtos::write_fifo(spawncoor_fifo, f32::to_bits(z));
             let _ = rtos::spawn_thread(&buff, 2, cube_thread);
         }
 
@@ -416,6 +428,7 @@ fn main() -> ! {
         .reset_pin(tft_rst)
         .init(&mut delay_source)
         .unwrap();
+    // 240 x 320 resolution
     core_p.SYST = delay_source.free();
     display.clear(Rgb565::BLACK).unwrap();
 
