@@ -43,9 +43,9 @@ static mut G8TOR_RTOS: MaybeUninit<G8torRtos> = MaybeUninit::uninit();
 
 #[repr(C)]
 pub struct G8torRtos {
-    running: Option<NonNull<TCB<NAME_LEN>>>,
+    running: Option<NonNull<TCB>>,
     system_time: u32,
-    threads: [Option<TCB<NAME_LEN>>; MAX_THREADS],
+    threads: [Option<TCB>; MAX_THREADS],
     periodic: [Option<PeriodicTCB>; MAX_PERIODIC],
     atomics: [u8; NUM_ATOMICS],
     atomic_mask: u8,
@@ -137,6 +137,7 @@ impl G8torRtos {
                     asleep: false,
                     priority: priority,
                     blocked_by: None,
+                    lr: 0xFD,  // EXC_RETURN to Thread mode, use PSP, no FPU
                     name: *name,
                 });
 
@@ -153,7 +154,7 @@ impl G8torRtos {
                        // so k = i-1 is definitely Some
 
                     // Release the thread reference
-                    let thread_ptr = thread as *mut TCB<NAME_LEN>;
+                    let thread_ptr = thread as *mut TCB;
 
                     // Update the previous TCB's next pointer to point to the new TCB
                     unsafe {
@@ -170,8 +171,8 @@ impl G8torRtos {
                 } else {
                     // First thread, points to itself
                     // SAFETY: We just initialized thread so it is definitely Some
-                    thread.next = unsafe { NonNull::new_unchecked(thread as *mut TCB<NAME_LEN>) };
-                    thread.prev = unsafe { NonNull::new_unchecked(thread as *mut TCB<NAME_LEN>) };
+                    thread.next = unsafe { NonNull::new_unchecked(thread as *mut TCB) };
+                    thread.prev = unsafe { NonNull::new_unchecked(thread as *mut TCB) };
                 }
 
                 return Ok(());
@@ -306,7 +307,7 @@ impl G8torRtos {
 
         // Set the currently running thread to the first thread added
         self.running = match (*_self_ptr).threads[0].as_mut() {
-            Some(tcb) => Some(NonNull::new_unchecked(tcb as *mut TCB<NAME_LEN>)),
+            Some(tcb) => Some(NonNull::new_unchecked(tcb as *mut TCB)),
             None => panic!("No threads to run!"),
         };
 

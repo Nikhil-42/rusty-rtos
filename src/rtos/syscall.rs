@@ -8,7 +8,7 @@ use super::{G8TOR_RTOS, NAME_LEN};
 #[inline(always)]
 pub fn sleep(
     rtos: *mut G8torRtos,
-    running_tcb: Option<NonNull<TCB<NAME_LEN>>>,
+    running_tcb: Option<NonNull<TCB>>,
     duration: u32,
 ) -> usize {
     if let Some(running_tcb) = running_tcb {
@@ -39,7 +39,7 @@ pub fn sleep(
 #[inline(always)]
 pub fn wait_semaphore(
     rtos: *mut G8torRtos,
-    running_tcb: Option<NonNull<TCB<NAME_LEN>>>,
+    running_tcb: Option<NonNull<TCB>>,
     sem_index: u8,
 ) -> usize {
     let prev_count = unsafe { (*rtos).atomics[sem_index as usize] };
@@ -68,7 +68,7 @@ pub fn wait_semaphore(
 #[inline(always)]
 pub fn signal_semaphore(
     rtos: *mut G8torRtos,
-    running_tcb: Option<NonNull<TCB<NAME_LEN>>>,
+    running_tcb: Option<NonNull<TCB>>,
     sem_index: u8,
 ) -> usize {
     let prev_count = unsafe { (*rtos).atomics[sem_index as usize] };
@@ -185,9 +185,10 @@ pub fn spawn_thread(
         sleep_until: 0,
         asleep: false,
         priority,
+        lr: 0xFD,  // EXC_RETURN to Thread mode, use PSP, no FPU
         blocked_by: None,
         name: *name,
-    }) as *mut TCB<NAME_LEN>;
+    }) as *mut TCB;
 
     if let Some(tid) = link_target_id {
         // Link after the target thread
@@ -217,7 +218,7 @@ pub fn spawn_thread(
 #[inline(always)]
 pub fn kill_thread(
     _rtos: *mut G8torRtos,
-    running_tcb: Option<NonNull<TCB<NAME_LEN>>>,
+    running_tcb: Option<NonNull<TCB>>,
     thread_id: usize,
 ) -> usize {
     // SAFETY: This is safe because PendSV will not run until after we exit the syscall
@@ -242,7 +243,7 @@ pub fn kill_thread(
 
     for t in thread {
         if t.id == thread_id {
-            to_remove = Some(t as *mut TCB<NAME_LEN>);
+            to_remove = Some(t as *mut TCB);
             break;
         }
     }
@@ -267,7 +268,7 @@ pub fn kill_thread(
         // SAFETY: We are the only ones with access to the TCB right now
         //           because we are in the SV handler > PendSV
         // SAFETY: Option is transparent over TCB so this is valid
-        unsafe { *(t as *mut TCB<NAME_LEN> as *mut Option<TCB<NAME_LEN>>) = None };
+        unsafe { *(t as *mut TCB as *mut Option<TCB>) = None };
 
         0
     } else {

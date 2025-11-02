@@ -13,7 +13,7 @@ cortex-m-rt = { path = "../cortex-m/cortex-m-rt" }
 tm4c123x-hal = { path = "../tm4c-hal/tm4c123x-hal" }
 
 [profile.dev]
-opt-level = 0
+opt-level = 3
 debug = true
 
 [dependencies]

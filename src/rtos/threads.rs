@@ -3,21 +3,22 @@ use crate::rtos::{G8torAtomicHandle};
 
 
 #[repr(C)]
-pub(super) struct TCB<const NAME_LEN: usize> {
+pub(super) struct TCB {
     pub id: usize,
     pub sp: NonNull<u32>, // Stack pointer (points to top of stack)
-    pub next: NonNull<TCB<NAME_LEN>>,
-    pub prev: NonNull<TCB<NAME_LEN>>,
+    pub next: NonNull<TCB>,
+    pub prev: NonNull<TCB>,
     pub sleep_until: u32,
     pub asleep: bool,
     pub priority: u8,
     pub blocked_by: Option<G8torAtomicHandle>, // A handle to the blocking atomic (if any)
-    pub name: [u8; NAME_LEN],
+    pub lr: u8, // Link register for context switching
+    pub name: [u8; 16],
 }
 
-impl<'a, const NAME_LEN: usize> IntoIterator for &'a mut TCB<NAME_LEN> {
-    type Item = &'a mut TCB<NAME_LEN>;
-    type IntoIter = TCBIterator<'a, NAME_LEN>;
+impl<'a> IntoIterator for &'a mut TCB {
+    type Item = &'a mut TCB;
+    type IntoIter = TCBIterator<'a>;
 
     fn into_iter(self) -> Self::IntoIter {
         TCBIterator {
@@ -28,16 +29,16 @@ impl<'a, const NAME_LEN: usize> IntoIterator for &'a mut TCB<NAME_LEN> {
     }
 }
 
-pub(super) struct TCBIterator<'a, const NAME_LEN: usize> {
-    end: NonNull<TCB<NAME_LEN>>,
-    current: Option<NonNull<TCB<NAME_LEN>>>,
-    _marker: PhantomData<&'a mut TCB<NAME_LEN>>,
+pub(super) struct TCBIterator<'a> {
+    end: NonNull<TCB>,
+    current: Option<NonNull<TCB>>,
+    _marker: PhantomData<&'a mut TCB>,
 }
 
-impl<'a, const NAME_LEN: usize> Iterator for TCBIterator<'a, NAME_LEN> {
-    type Item = &'a mut TCB<NAME_LEN>;
+impl<'a> Iterator for TCBIterator<'a> {
+    type Item = &'a mut TCB;
 
-    fn next(&mut self) -> Option<&'a mut TCB<NAME_LEN>> {
+    fn next(&mut self) -> Option<&'a mut TCB> {
         let mut curr = self.current?;
         let next= unsafe { curr.as_ref() }.next;
         if curr == self.end {

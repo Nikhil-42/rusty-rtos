@@ -1,9 +1,9 @@
 use core::ptr::NonNull;
 
-use super::{G8torRtos, TCB, NAME_LEN};
+use super::{G8torRtos, TCB};
 
 // Executes in critical section so we have exclusive access to G8TOR_RTOS
-pub(super) unsafe extern "C" fn _scheduler(rtos: *mut G8torRtos) -> Option<NonNull<TCB<NAME_LEN>>> {
+pub(super) unsafe extern "C" fn _scheduler(rtos: *mut G8torRtos) -> Option<NonNull<TCB>> {
     let rtos = &mut *rtos;
     let next_thread = if let Some(running) = rtos.running.as_mut() {
         // If there's a running thread, start searching from its next thread
@@ -20,7 +20,7 @@ pub(super) unsafe extern "C" fn _scheduler(rtos: *mut G8torRtos) -> Option<NonNu
         next_thread?
     };
 
-    let mut selected: Option<&mut TCB<NAME_LEN>> = None;
+    let mut selected: Option<&mut TCB> = None;
     for thread in next_thread {
         if thread.asleep {
             // Check if the deadline has passed

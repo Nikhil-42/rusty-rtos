@@ -9,14 +9,14 @@ use eel4745c::SyncUnsafeOnceCell;
 
 use eh0::serial::{Read as _, Write as _};
 use embedded_graphics::{
-    mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder},
     pixelcolor::Rgb565,
-    prelude::*,
-    primitives::Rectangle,
-    text::Text,
 };
 use embedded_hal::{digital::OutputPin, i2c::I2c, spi::SpiBus};
 use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
+use embedded_graphics::{
+    prelude::*,
+    primitives::*
+};
 use mipidsi::Display;
 use mipidsi::{interface::SpiInterface, Builder};
 
@@ -62,6 +62,7 @@ static mut UART0_S: MaybeUninit<
         (),
     >,
 > = MaybeUninit::uninit();
+static KILL_CUBE: AtomicBool = AtomicBool::new(false);
 static CAMERA_COORD_MUTEX: G8torMutex<(f32, f32, f32)> = G8torMutex::empty();
 static SCREEN_MUTEX: G8torMutex<
     Display<
@@ -171,46 +172,44 @@ extern "C" fn cam_move(_rtos: G8torThreadHandle) -> ! {
 }
 
 #[inline(never)]
-extern "C" fn cube_thread(_rtos: G8torThreadHandle) -> ! {
-    let cam_mutex = &*CAMERA_COORD_MUT;
+extern "C" fn cube_thread(rtos: G8torThreadHandle) -> ! {
+    // let cam_mutex = &*CAMERA_COORD_MUT;
     let screen_mutex = &*SCREEN_MUT;
     let spawncoor_fifo = &*SPAWNCOOR_FIFO;
 
     let coord_val = rtos::read_fifo(spawncoor_fifo);
-    let x = (coord_val >> 16) as u32;
-    let y = (coord_val & 0xFFFF) as u32;
+    let x = (coord_val >> 16) as i32;
+    let y = (coord_val & 0xFFFF) as i32;
 
     // Draws and undraws a cube on the screen
     loop {
-        let cam_coords = CAMERA_COORD_MUTEX.get(rtos::take_mutex(cam_mutex));
-        let (x, y, z) = *cam_coords;
-        rtos::release_mutex(cam_mutex, CAMERA_COORD_MUTEX.release(cam_coords));
+        // let cam_coords = CAMERA_COORD_MUTEX.get(rtos::take_mutex(cam_mutex));
+        // let (x, y, z) = *cam_coords;
+        // rtos::release_mutex(cam_mutex, CAMERA_COORD_MUTEX.release(cam_coords));
 
         let rect = Rectangle::new(
-            Point::new(x as i32, (y * 10.0) as i32),
+            Point::new(x, y),
             Size::new(50, 50),
         );
+        let rect_styled = rect.into_styled(PrimitiveStyle::with_stroke(Rgb565::GREEN, 1));
 
         let screen = SCREEN_MUTEX.get(rtos::take_mutex(screen_mutex));
-        screen
-            .fill_contiguous(
-                &rect,
-                core::iter::repeat_with(|| Rgb565::GREEN)
-                    .take((rect.size.width * rect.size.height) as usize),
-            )
-            .unwrap();
+        rect_styled.draw(screen).unwrap();
         rtos::release_mutex(screen_mutex, SCREEN_MUTEX.release(screen));
 
         // Draw cube at (x, y, z)
-        rtos::sleep_ms(500);
+        rtos::sleep_ms(1000);
 
         // Undraw cube
+        let undraw = rect.into_styled(PrimitiveStyle::with_stroke(Rgb565::BLACK, 1));
         let screen = SCREEN_MUTEX.get(rtos::take_mutex(screen_mutex));
-        screen.fill_contiguous(
-            &rect, core::iter::repeat_with(|| Rgb565::BLACK)
-                .take((rect.size.width * rect.size.height) as usize),
-        ).unwrap();
+        undraw.draw(screen).unwrap();
         rtos::release_mutex(screen_mutex, SCREEN_MUTEX.release(screen));
+
+        if KILL_CUBE.fetch_and(false, Ordering::Relaxed) {
+            rtos.kill();
+        };
+            
     }
 }
 
@@ -239,11 +238,11 @@ extern "C" fn read_buttons(_rtos: G8torThreadHandle) -> ! {
             let _ = rtos::spawn_thread(&buff, 2, cube_thread);
         }
 
-        // // SW2
-        // if (val & 1 << 2) == 0 {
-        //     // Kill cube thread
-        //     let _ = rtos::kill_thread();
-        // }
+        // SW2
+        if (val & 1 << 2) == 0 {
+            // Kill cube thread
+            KILL_CUBE.store(true, Ordering::Relaxed);
+        }
     }
 }
 
