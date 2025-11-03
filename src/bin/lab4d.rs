@@ -7,8 +7,9 @@ use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};
 use eel4745c::SyncUnsafeOnceCell;
 
+use eel4745c::graphics::Cube;
 use embedded_graphics::pixelcolor::Rgb565;
-use embedded_graphics::{prelude::*, primitives::*};
+use embedded_graphics::prelude::*;
 use embedded_hal::{digital::OutputPin, i2c::I2c};
 use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
 use mipidsi::Display;
@@ -41,7 +42,6 @@ use tm4c123x_hal::{
     },
     pac::{self, SSI0, UART0},
     prelude::*,
-    // prelude::,
     serial::Serial,
 };
 
@@ -147,14 +147,20 @@ extern "C" fn cam_move(_rtos: G8torThreadHandle) -> ! {
     let cam_mutex = &*CAMERA_COORD_MUT;
 
     loop {
-        let joystick_val = core::hint::black_box(rtos::read_fifo(joystick_fifo_handle));
-        let x = core::hint::black_box((joystick_val & 0xFFFF) as u16);
-        let y = core::hint::black_box(((joystick_val >> 16) & 0xFFFF) as u16);
+        let joystick_val = rtos::read_fifo(joystick_fifo_handle);
+        let x = (joystick_val & 0xFFFF) as u16;
+        let y = ((joystick_val >> 16) & 0xFFFF) as u16;
 
-        let x = (x as f32) / (0xFFF as f32) - 0.5;
+        let x = -((x as f32) / (0xFFF as f32) - 0.5);
         let y = (y as f32) / (0xFFF as f32) - 0.5;
+
+        // Deadband
+        if x.abs() < 0.05 && y.abs() < 0.05 {
+            continue;
+        }
+
         let (y, z) = if JOYSTICK_FLAG.load(core::sync::atomic::Ordering::Relaxed) {
-            (0.0, y)
+            (0.0, -y)
         } else {
             (y, 0.0)
         };
@@ -185,36 +191,30 @@ extern "C" fn cube_thread(rtos: G8torThreadHandle) -> ! {
         let (cam_x, cam_y, cam_z) = *cam_coords;
         rtos::release_mutex(cam_mutex, CAMERA_COORD_MUTEX.release(cam_coords));
 
-        // Draw a cube at (x, y, z) relative to camera position
-        let rel_x = x - cam_x;
-        let rel_y = y - cam_y;
-        let rel_z = -(z - cam_z);
+        let center = (x - cam_x, y - cam_y, -(z - cam_z));
 
         // Project to 2D screen coordinates (simple perspective projection)
-        let scale_factor = 20.0 / rel_z; // Size decreases with distance
-        let screen_x = rel_x * scale_factor + 120.0;
-        let screen_y = rel_y * scale_factor + 160.0;
-        let box_size = 50.0 * scale_factor;
-        let rect = Rectangle::new(
-            Point::new(
-                (screen_x - 0.5 * box_size) as i32,
-                (screen_y - 0.5 * box_size) as i32,
-            ),
-            Size::new(box_size as u32, box_size as u32),
-        );
-        let rect_styled = rect.into_styled(PrimitiveStyle::with_stroke(Rgb565::GREEN, 1));
+        let cube = Cube {
+            center,
+            size: 50.0,
+            color: Rgb565::GREEN,
+        };
 
         let screen = SCREEN_MUTEX.get(rtos::take_mutex(screen_mutex));
-        rect_styled.draw(screen).unwrap();
+        cube.draw(screen).unwrap();
         rtos::release_mutex(screen_mutex, SCREEN_MUTEX.release(screen));
 
         // Draw cube at (x, y, z)
-        rtos::sleep_ms(30);
+        rtos::sleep_ms(100);
 
         // Undraw cube
-        let undraw = rect.into_styled(PrimitiveStyle::with_stroke(Rgb565::BLACK, 1));
+        let cube = Cube {
+            center,
+            size: 50.0,
+            color: Rgb565::BLACK,
+        };
         let screen = SCREEN_MUTEX.get(rtos::take_mutex(screen_mutex));
-        undraw.draw(screen).unwrap();
+        cube.draw(screen).unwrap();
         rtos::release_mutex(screen_mutex, SCREEN_MUTEX.release(screen));
 
         if KILL_CUBE.fetch_and(false, Ordering::Relaxed) {
@@ -244,7 +244,7 @@ extern "C" fn read_buttons(_rtos: G8torThreadHandle) -> ! {
             let buff = *b"cube_thread\0\0\0\0\0";
             let x: f32 = rand.random_range(-100.0..100.0);
             let y: f32 = rand.random_range(-100.0..100.0);
-            let z: f32 = rand.random_range(-100.0..100.0);
+            let z: f32 = rand.random_range(-120.0..-20.0);
             rtos::write_fifo(spawncoor_fifo, f32::to_bits(x));
             rtos::write_fifo(spawncoor_fifo, f32::to_bits(y));
             rtos::write_fifo(spawncoor_fifo, f32::to_bits(z));
@@ -435,7 +435,7 @@ fn main() -> ! {
         PE0<Output<PushPull>>,
     > = Builder::new(mipidsi::models::ST7789, di)
         .invert_colors(mipidsi::options::ColorInversion::Inverted)
-        .orientation(mipidsi::options::Orientation::new().flip_vertical())
+        .orientation(mipidsi::options::Orientation::new().flip_horizontal())
         .reset_pin(tft_rst)
         .init(&mut delay_source)
         .unwrap();

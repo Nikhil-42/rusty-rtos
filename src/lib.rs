@@ -2,6 +2,7 @@
 #![no_main]
 
 use core::{cell::UnsafeCell, mem::MaybeUninit, ops::Deref};
+pub mod graphics;
 pub mod rtos;
 
 #[repr(transparent)]

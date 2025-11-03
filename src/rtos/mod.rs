@@ -28,12 +28,12 @@ use cortex_m::peripheral::scb::SystemHandler;
 use cortex_m::peripheral::syst::SystClkSource;
 use tm4c123x_hal::pac::{Interrupt, NVIC};
 
-const MAX_THREADS: usize = 8;
-const MAX_PERIODIC: usize = 4;
-const STACK_SIZE: usize = 512; // 2KB stack
+const MAX_THREADS: usize = 28;
+const MAX_PERIODIC: usize = 2;
+const STACK_SIZE: usize = 256; // 2KB stack
 const NUM_ATOMICS: usize = 8;
-const NUM_FIFO: usize = 4;
-const FIFO_SIZE: usize = 64;
+const NUM_FIFO: usize = 2;
+const FIFO_SIZE: usize = 8;
 const NAME_LEN: usize = 16;
 
 const PERIOD_US: u32 = 1_000; // SysTick period in microseconds
