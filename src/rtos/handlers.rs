@@ -1,4 +1,4 @@
-use core::{arch::{asm, naked_asm}, mem::offset_of};
+use core::{arch::{asm, global_asm, naked_asm}, mem::offset_of};
 use cortex_m_rt::{exception, ExceptionFrame};
 
 use super::{periodic::_run_periodics, scheduler::_scheduler, syscall::_syscall, G8TOR_RTOS};
@@ -49,62 +49,69 @@ unsafe extern "C" fn SysTick() {
     )
 }
 
-#[no_mangle]
-#[unsafe(naked)]
-unsafe extern "C" fn PendSV() {
-    naked_asm!(
-        "cpsid i",                      // Begin critical section
-        // check if there is a running thread
-        "ldr r0, ={G8TOR_RTOS}",        // G8torRtos* r0 = &G8TOR_RTOS
-        "ldr r1, [r0, {G8torRtos_running}]",     // TCB* r1 = G8TOR_RTOS.running
-        "cbz r1, 1f",                   // if (r1 == null) don't save context
-        // G8TOR_RTOS.running is not null, save its context
-        "mrs r12, psp",                 // Get process stack pointer
-        "tst lr, #(1 << 4)",            // Check EXC_RETURN bit 4 (FPU context)
-        "it eq",                        // If FPU context is present
-        "vstmdb r12!, {{s16-s31}}",   // Save FPU registers if needed
-        "stmdb r12!, {{r4-r11}}",       // Save callee-saved registers (for the current thread)
-        "str r12, [r1, {TCB_sp}]",      // u32* r1->sp = sp
-        "strb lr, [r1, {TCB_lr}]",      // u8 r1->lr = lr
+// #[no_mangle]
+// #[unsafe(naked)]
+// unsafe extern "C" fn PendSV() {
+global_asm!(
+    ".syntax unified",
+    ".cpu cortex-m4",
+    ".thumb",
+    ".fpu fpv4-sp-d16",
+    ".global PendSV",
+    ".type PendSV, %function",
+    "PendSV:",
+    "cpsid i",                      // Begin critical section
+    // check if there is a running thread
+    "ldr r0, ={G8TOR_RTOS}",        // G8torRtos* r0 = &G8TOR_RTOS
+    "ldr r1, [r0, {G8torRtos_running}]",     // TCB* r1 = G8TOR_RTOS.running
+    "cbz r1, 1f",                   // if (r1 == null) don't save context
+    // G8TOR_RTOS.running is not null, save its context
+    "mrs r12, psp",                 // Get process stack pointer
+    "tst lr, #(1 << 4)",            // Check EXC_RETURN bit 4 (FPU context)
+    "it eq",                        // If FPU context is present
+    "vstmdbeq r12!, {{s16-s31}}",   // Save FPU registers if needed
+    "stmdb r12!, {{r4-r11}}",       // Save callee-saved registers (for the current thread)
+    "str r12, [r1, {TCB_sp}]",      // u32* r1->sp = sp
+    "strb lr, [r1, {TCB_lr}]",      // u8 r1->lr = lr
 
-        // Call scheduler to select the next thread to run
-        "1:",
-        "push {{r0, lr}}",      // Save G8torRtos* r0 on stack (and lr for alignment)
-        "bl {SCHEDULER}",       // Call scheduler(r0 = *G8torRtos) => returns TCB* in r0
-        "mov r1, r0",           // TCB* r1 = return value from scheduler
-        "pop {{r0, lr}}",       // Restore G8torRtos* r0 from stack (and lr for alignment)
-        "str r1, [r0, {G8torRtos_running}]",     // G8TOR_RTOS.running = r1
+    // Call scheduler to select the next thread to run
+    "1:",
+    "push {{r0, lr}}",      // Save G8torRtos* r0 on stack (and lr for alignment)
+    "bl {SCHEDULER}",       // Call scheduler(r0 = *G8torRtos) => returns TCB* in r0
+    "mov r1, r0",           // TCB* r1 = return value from scheduler
+    "pop {{r0, lr}}",       // Restore G8torRtos* r0 from stack (and lr for alignment)
+    "str r1, [r0, {G8torRtos_running}]",     // G8TOR_RTOS.running = r1
 
-        // r1 may be null if no thread is ready to run
-        "cbz r1, 1f",           // if (r1 == null) skip context restore
+    // r1 may be null if no thread is ready to run
+    "cbz r1, 1f",           // if (r1 == null) skip context restore
 
-        // There is a thread to run, restore its context
-        "ldrsb lr, [r1, {TCB_lr}]",    // u8 lr = r1->lr
-        "ldr r12, [r1, {TCB_sp}]",    // u32* sp = r1->sp
-        "ldmia r12!, {{r4-r11}}",       // Restore callee-saved registers (for the new thread)
-        "tst lr, #(1 << 4)",            // Check EXC_RETURN bit 4 (FPU context)
-        "it eq",                        // If FPU context is present
-        "vldmia r12!, {{s16-s31}}",   // Restore FPU registers if needed
-        "msr psp, r12",         // Set PSP to frame
-        "cpsie i",              // End critical section
-        "bx lr",                // Return from PendSV
+    // There is a thread to run, restore its context
+    "ldrsb lr, [r1, {TCB_lr}]",    // u8 lr = r1->lr
+    "ldr r12, [r1, {TCB_sp}]",    // u32* sp = r1->sp
+    "ldmia r12!, {{r4-r11}}",       // Restore callee-saved registers (for the new thread)
+    "tst lr, #(1 << 4)",            // Check EXC_RETURN bit 4 (FPU context)
+    "it eq",                        // If FPU context is present
+    "vldmiaeq r12!, {{s16-s31}}",   // Restore FPU registers if needed
+    "msr psp, r12",         // Set PSP to frame
+    "cpsie i",              // End critical section
+    "bx lr",                // Return from PendSV
 
-        // No thread to run, enter low-power idle state
-        "1:",
-        "ldr r12, ={IDLE_FRAME}",     // Load address of idle frame
-        "ldr lr, =0xFFFFFFFD", // Load LR for idle frame
-        "msr psp, r12",         // Set PSP to frame
-        "cpsie i",              // Enable interrupts
-        "bx lr",                // Return from PendSV
+    // No thread to run, enter low-power idle state
+    "1:",
+    "ldr r12, ={IDLE_FRAME}",     // Load address of idle frame
+    "ldr lr, =0xFFFFFFFD", // Load LR for idle frame
+    "msr psp, r12",         // Set PSP to frame
+    "cpsie i",              // Enable interrupts
+    "bx lr",                // Return from PendSV
 
-        G8TOR_RTOS = sym G8TOR_RTOS,
-        G8torRtos_running = const offset_of!(super::G8torRtos, running),
-        SCHEDULER = sym _scheduler,
-        IDLE_FRAME = sym IDLE_FRAME,
-        TCB_sp = const offset_of!(super::TCB, sp),
-        TCB_lr = const offset_of!(super::TCB, lr),
-    );
-}
+    G8TOR_RTOS = sym G8TOR_RTOS,
+    G8torRtos_running = const offset_of!(super::G8torRtos, running),
+    SCHEDULER = sym _scheduler,
+    IDLE_FRAME = sym IDLE_FRAME,
+    TCB_sp = const offset_of!(super::TCB, sp),
+    TCB_lr = const offset_of!(super::TCB, lr),
+);
+// }
 
 #[no_mangle]
 #[unsafe(naked)]

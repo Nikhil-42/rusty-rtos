@@ -2,21 +2,15 @@
 #![no_main]
 #![allow(static_mut_refs)]
 
-use core::arch::asm;
 use core::fmt::Write as _;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};
 use eel4745c::SyncUnsafeOnceCell;
 
-use embedded_graphics::{
-    pixelcolor::Rgb565,
-};
+use embedded_graphics::pixelcolor::Rgb565;
+use embedded_graphics::{prelude::*, primitives::*};
 use embedded_hal::{digital::OutputPin, i2c::I2c};
 use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
-use embedded_graphics::{
-    prelude::*,
-    primitives::*
-};
 use mipidsi::Display;
 use mipidsi::{interface::SpiInterface, Builder};
 
@@ -35,7 +29,7 @@ use tm4c123x_hal::gpio::{
     gpiof::{PF3, PF4},
     Floating, OpenDrain, Output, AF2,
 };
-use tm4c123x_hal::gpio::{AF3, Analog, Input, PullUp};
+use tm4c123x_hal::gpio::{Analog, Input, PullUp, AF3};
 use tm4c123x_hal::i2c::I2C;
 use tm4c123x_hal::pac::{ADC0, ADC1, I2C1};
 use tm4c123x_hal::spi::Spi;
@@ -64,18 +58,10 @@ static mut UART0_S: MaybeUninit<
         (),
     >,
 > = MaybeUninit::uninit();
-static mut JOYSTICK_X_ADC: MaybeUninit<
-    AdcSingle<
-        ADC0,
-        PE3<Analog<Input<Floating>>>,
-    >
-> = MaybeUninit::uninit();
-static mut JOYSTICK_Y_ADC: MaybeUninit<
-    AdcSingle<
-        ADC1,
-        PE2<Analog<Input<Floating>>>,
-    >
-> = MaybeUninit::uninit();
+static mut JOYSTICK_X_ADC: MaybeUninit<AdcSingle<ADC0, PE3<Analog<Input<Floating>>>>> =
+    MaybeUninit::uninit();
+static mut JOYSTICK_Y_ADC: MaybeUninit<AdcSingle<ADC1, PE2<Analog<Input<Floating>>>>> =
+    MaybeUninit::uninit();
 static KILL_CUBE: AtomicBool = AtomicBool::new(false);
 static CAMERA_COORD_MUTEX: G8torMutex<(f32, f32, f32)> = G8torMutex::empty();
 static SCREEN_MUTEX: G8torMutex<
@@ -159,29 +145,26 @@ static mut SPI_BUFFER: [u8; 16] = [0; 16];
 extern "C" fn cam_move(_rtos: G8torThreadHandle) -> ! {
     let joystick_fifo_handle = &*JOYSTICK_FIFO;
     let cam_mutex = &*CAMERA_COORD_MUT;
-    let uart = unsafe { UART0_S.assume_init_mut() };
 
     loop {
         let joystick_val = core::hint::black_box(rtos::read_fifo(joystick_fifo_handle));
         let x = core::hint::black_box((joystick_val & 0xFFFF) as u16);
         let y = core::hint::black_box(((joystick_val >> 16) & 0xFFFF) as u16);
-        writeln!(uart, "Joystick X: {}, Y: {}", x, y).unwrap();
 
         let x = (x as f32) / (0xFFF as f32) - 0.5;
         let y = (y as f32) / (0xFFF as f32) - 0.5;
-        writeln!(uart, "Joystick X: {}, Y: {}", x, y).unwrap();
-        // let (y, z) = if JOYSTICK_FLAG.load(core::sync::atomic::Ordering::Relaxed) {
-        //     (y, 0.0)
-        // } else {
-        //     (0.0, y)
-        // };
+        let (y, z) = if JOYSTICK_FLAG.load(core::sync::atomic::Ordering::Relaxed) {
+            (0.0, y)
+        } else {
+            (y, 0.0)
+        };
 
         // Move camera based on x and y
         let cam_coords = CAMERA_COORD_MUTEX.get(rtos::take_mutex(cam_mutex));
 
-        cam_coords.0 += x; //x;
-        // cam_coords.1 += 0.1; //y;
-        // cam_coords.2 += 0.1; //z;
+        cam_coords.0 += x;
+        cam_coords.1 += y;
+        cam_coords.2 += z;
 
         rtos::release_mutex(cam_mutex, CAMERA_COORD_MUTEX.release(cam_coords));
     }
@@ -203,16 +186,21 @@ extern "C" fn cube_thread(rtos: G8torThreadHandle) -> ! {
         rtos::release_mutex(cam_mutex, CAMERA_COORD_MUTEX.release(cam_coords));
 
         // Draw a cube at (x, y, z) relative to camera position
-        // let rel_x = x - cam_x;
-        // let rel_y = y - cam_y;
-        // let rel_z = z - cam_z;
+        let rel_x = x - cam_x;
+        let rel_y = y - cam_y;
+        let rel_z = -(z - cam_z);
 
         // Project to 2D screen coordinates (simple perspective projection)
-        let screen_x = (x + 120.0) as i32;
-        let screen_y = (y + 160.0) as i32;
+        let scale_factor = 20.0 / rel_z; // Size decreases with distance
+        let screen_x = rel_x * scale_factor + 120.0;
+        let screen_y = rel_y * scale_factor + 160.0;
+        let box_size = 50.0 * scale_factor;
         let rect = Rectangle::new(
-            Point::new(screen_x as i32, screen_y as i32),
-            Size::new(50, 50),
+            Point::new(
+                (screen_x - 0.5 * box_size) as i32,
+                (screen_y - 0.5 * box_size) as i32,
+            ),
+            Size::new(box_size as u32, box_size as u32),
         );
         let rect_styled = rect.into_styled(PrimitiveStyle::with_stroke(Rgb565::GREEN, 1));
 
@@ -221,7 +209,7 @@ extern "C" fn cube_thread(rtos: G8torThreadHandle) -> ! {
         rtos::release_mutex(screen_mutex, SCREEN_MUTEX.release(screen));
 
         // Draw cube at (x, y, z)
-        rtos::sleep_ms(1000);
+        rtos::sleep_ms(30);
 
         // Undraw cube
         let undraw = rect.into_styled(PrimitiveStyle::with_stroke(Rgb565::BLACK, 1));
@@ -232,7 +220,6 @@ extern "C" fn cube_thread(rtos: G8torThreadHandle) -> ! {
         if KILL_CUBE.fetch_and(false, Ordering::Relaxed) {
             rtos.kill();
         };
-            
     }
 }
 
@@ -253,7 +240,7 @@ extern "C" fn read_buttons(_rtos: G8torThreadHandle) -> ! {
         // SW1
         if (val & 1 << 1) == 0 {
             // Spawn cube thread
-            KILL_CUBE.store(false, Ordering::Relaxed);  // Don't kill immediately
+            KILL_CUBE.store(false, Ordering::Relaxed); // Don't kill immediately
             let buff = *b"cube_thread\0\0\0\0\0";
             let x: f32 = rand.random_range(-100.0..100.0);
             let y: f32 = rand.random_range(-100.0..100.0);
@@ -282,17 +269,17 @@ extern "C" fn read_joystick(_rtos: G8torThreadHandle) -> ! {
 }
 
 extern "C" fn print_world_coords() {
-    // // Prints the current world coordinates of the camera every 100ms
-    // unsafe {
-    //     let coords = CAMERA_COORD_MUTEX.steal();
-    //     let _ = writeln!(
-    //         UART0_S.assume_init_mut(),
-    //         "Camera World Coords: {}, {}, {}",
-    //         coords.0,
-    //         coords.1,
-    //         coords.2
-    //     );
-    // }
+    // Prints the current world coordinates of the camera every 100ms
+    unsafe {
+        let coords = CAMERA_COORD_MUTEX.steal();
+        let _ = writeln!(
+            UART0_S.assume_init_mut(),
+            "Camera World Coords: {}, {}, {}",
+            coords.0,
+            coords.1,
+            coords.2
+        );
+    }
 }
 
 extern "C" fn get_joystick() {
@@ -330,12 +317,6 @@ extern "C" fn joystick_click_isr() {
 
 #[entry]
 fn main() -> ! {
-    unsafe { asm!(
-        "mov r12, sp",  
-        "vstmdb r12!, {{s16-s31}}",   // Save FPU registers if needed
-        "vldmia r12!, {{s16-s31}}",   // Restore FPU registers if needed
-    )};
-
     let p = pac::Peripherals::take().unwrap();
 
     let mut sc = p.SYSCTL.constrain();
