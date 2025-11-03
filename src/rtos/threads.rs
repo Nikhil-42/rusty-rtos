@@ -1,6 +1,5 @@
+use crate::rtos::G8torAtomicHandle;
 use core::{marker::PhantomData, ptr::NonNull};
-use crate::rtos::{G8torAtomicHandle};
-
 
 #[repr(C)]
 pub(super) struct TCB {
@@ -12,7 +11,7 @@ pub(super) struct TCB {
     pub asleep: bool,
     pub priority: u8,
     pub blocked_by: Option<G8torAtomicHandle>, // A handle to the blocking atomic (if any)
-    pub lr: u8, // Link register for context switching
+    pub lr: u8,                                // Link register for context switching
     pub name: [u8; 16],
 }
 
@@ -40,13 +39,13 @@ impl<'a> Iterator for TCBIterator<'a> {
 
     fn next(&mut self) -> Option<&'a mut TCB> {
         let mut curr = self.current?;
-        let next= unsafe { curr.as_ref() }.next;
+        let next = unsafe { curr.as_ref() }.next;
         if curr == self.end {
             self.current = None;
         } else {
             self.current = Some(next);
         }
         // Move to the next TCB
-        Some(unsafe { curr.as_mut() } )
+        Some(unsafe { curr.as_mut() })
     }
 }

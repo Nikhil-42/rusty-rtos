@@ -1,8 +1,11 @@
-use core::{cell::UnsafeCell, sync::atomic::{AtomicU32, Ordering}};
+use core::{
+    cell::UnsafeCell,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use embedded_hal::i2c::{ErrorType, I2c};
 
-use crate::rtos::{FIFO_SIZE as LEN, G8torSemaphoreHandle};
+use crate::rtos::{G8torSemaphoreHandle, FIFO_SIZE as LEN};
 
 #[derive(Copy, Clone, Debug)]
 pub struct G8torFifoHandle {
@@ -16,7 +19,7 @@ pub(super) struct G8torFifoInternals {
     buffer: [UnsafeCell<u32>; LEN],
 }
 
-const MASK: u32 = const { 
+const MASK: u32 = const {
     assert!(LEN.is_power_of_two());
     (LEN as u32) - 1
 };
@@ -27,7 +30,9 @@ impl G8torFifoInternals {
         let idx = (old_tail & MASK) as usize;
 
         // Write data into buffer slot (unsafe cell)
-        unsafe { self.buffer[idx].get().write(val); }
+        unsafe {
+            self.buffer[idx].get().write(val);
+        }
 
         // Now check whether we've advanced past head by more than capacity
         let head = self.head.load(Ordering::Acquire);
@@ -78,7 +83,6 @@ impl G8torFifo {
         self.internals.write(val)
     }
 }
-
 
 // Implement I2C for a Mutex that guards an I2C bus
 impl<T: I2c> ErrorType for super::G8torMutexHandle<T> {

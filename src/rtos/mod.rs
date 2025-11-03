@@ -138,7 +138,7 @@ impl G8torRtos {
                     asleep: false,
                     priority: priority,
                     blocked_by: None,
-                    lr: 0xFD,  // EXC_RETURN to Thread mode, use PSP, no FPU
+                    lr: 0xFD, // EXC_RETURN to Thread mode, use PSP, no FPU
                     name: *name,
                 });
 
@@ -400,6 +400,7 @@ pub fn release_mutex<T>(handle: &G8torMutexHandle<T>, lock: G8torMutexLock<T>) {
 pub fn read_fifo(handle: &G8torFifoHandle) -> u32 {
     // SAFTEY: We do not write to fifos ever after initialization
     let fifo = unsafe {
+        #[allow(static_mut_refs)]
         (*const { &raw const (*G8TOR_RTOS.as_ptr()).fifos })[handle.index as usize]
             .as_ref()
             .unwrap_unchecked()
@@ -412,6 +413,7 @@ pub fn read_fifo(handle: &G8torFifoHandle) -> u32 {
 pub fn write_fifo(handle: &G8torFifoHandle, val: u32) {
     // SAFTEY: We do not write to fifos ever after initialization
     let fifo = unsafe {
+        #[allow(static_mut_refs)]
         (*const { &raw const (*G8TOR_RTOS.as_ptr()).fifos })[handle.index as usize]
             .as_ref()
             .unwrap_unchecked()

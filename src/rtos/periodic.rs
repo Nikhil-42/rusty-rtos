@@ -32,17 +32,16 @@ impl<'a> Iterator for PeriodicTCBIterator<'a> {
 
     fn next(&mut self) -> Option<&'a mut PeriodicTCB> {
         let mut curr = self.current?;
-        let next= unsafe { curr.as_ref() }.next;
+        let next = unsafe { curr.as_ref() }.next;
         if curr == self.end {
             self.current = None;
         } else {
             self.current = Some(next);
         }
         // Move to the next TCB
-        Some(unsafe { curr.as_mut() } )
+        Some(unsafe { curr.as_mut() })
     }
 }
-
 
 // SAFETY: executes in SysTick context which is uninterruptible
 pub(super) fn _run_periodics(rtos: &'static mut super::G8torRtos) {
@@ -54,5 +53,4 @@ pub(super) fn _run_periodics(rtos: &'static mut super::G8torRtos) {
             }
         }
     }
-
 }

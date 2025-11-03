@@ -3,6 +3,7 @@
 
 use embedded_graphics::mono_font::MonoTextStyleBuilder;
 
+use bmi160::Bmi160;
 use embedded_hal::digital::InputPin;
 use embedded_hal::digital::OutputPin;
 use embedded_hal_bus::i2c::AtomicDevice;
@@ -13,22 +14,26 @@ use mipidsi::models::ST7789;
 use mipidsi::options::ColorInversion;
 use mipidsi::options::Orientation;
 use opt300x::Opt300x;
-use bmi160::Bmi160;
 use panic_halt as _;
 
-use embedded_graphics::{prelude::*, mono_font::ascii::FONT_6X10, pixelcolor::Rgb565, text::Text};
+use embedded_graphics::{mono_font::ascii::FONT_6X10, pixelcolor::Rgb565, prelude::*, text::Text};
 use mipidsi::Builder;
 
+use cortex_m_rt::entry;
 use tm4c123x_hal::gpio::GpioExt;
 use tm4c123x_hal::gpio::PullUp;
 use tm4c123x_hal::i2c::I2C;
 use tm4c123x_hal::pac::I2C1;
 use tm4c123x_hal::pac::SSI0;
 use tm4c123x_hal::sysctl::SysctlExt;
-use tm4c123x_hal::{self as hal, prelude::*, pac, gpio::{Floating, AF3}};
-use cortex_m_rt::entry;
+use tm4c123x_hal::{
+    self as hal,
+    gpio::{Floating, AF3},
+    pac,
+    prelude::*,
+};
 
-use core::{fmt::Write};
+use core::fmt::Write;
 
 #[entry]
 fn main() -> ! {
@@ -57,24 +62,32 @@ fn main() -> ! {
     let mut porta = p.GPIO_PORTA.split(&sc.power_control);
     let porte = p.GPIO_PORTE.split(&sc.power_control);
     let mut portf = p.GPIO_PORTF.split(&sc.power_control);
-   
+
     let i2c = I2C::<I2C1, _>::new(
         p.I2C1,
         (
             porta.pa6.into_af_push_pull::<AF3>(&mut porta.control),
-            porta.pa7.into_af_open_drain::<AF3, PullUp>(&mut porta.control)
+            porta
+                .pa7
+                .into_af_open_drain::<AF3, PullUp>(&mut porta.control),
         ),
         100.khz(),
         &clocks,
         &sc.power_control,
-    ); 
+    );
 
     let spi = hal::spi::Spi::<SSI0, _>::spi0(
         p.SSI0,
         (
-            porta.pa2.into_af_push_pull::<hal::gpio::AF2>(&mut porta.control),
-            porta.pa4.into_af_open_drain::<hal::gpio::AF2, Floating>(&mut porta.control),
-            porta.pa5.into_af_push_pull::<hal::gpio::AF2>(&mut porta.control),
+            porta
+                .pa2
+                .into_af_push_pull::<hal::gpio::AF2>(&mut porta.control),
+            porta
+                .pa4
+                .into_af_open_drain::<hal::gpio::AF2, Floating>(&mut porta.control),
+            porta
+                .pa5
+                .into_af_push_pull::<hal::gpio::AF2>(&mut porta.control),
         ),
         hal::spi::MODE_3,
         20.mhz(),
@@ -83,15 +96,25 @@ fn main() -> ! {
     );
 
     let i2c_atomic = AtomicCell::new(i2c);
-    let opt3001 = Opt300x::new_opt3001(AtomicDevice::new(&i2c_atomic), opt300x::SlaveAddr::Alternative(true, true) );
-    let mut bmi160 = Bmi160::new_with_i2c(AtomicDevice::new(&i2c_atomic), bmi160::SlaveAddr::Alternative(true) );
+    let opt3001 = Opt300x::new_opt3001(
+        AtomicDevice::new(&i2c_atomic),
+        opt300x::SlaveAddr::Alternative(true, true),
+    );
+    let mut bmi160 = Bmi160::new_with_i2c(
+        AtomicDevice::new(&i2c_atomic),
+        bmi160::SlaveAddr::Alternative(true),
+    );
 
     let mut opt3001 = match opt3001.into_continuous() {
         Ok(sensor) => sensor,
         Err(_) => panic!("Failed to configure OPT3001"),
     };
-    bmi160.set_accel_power_mode(bmi160::AccelerometerPowerMode::Normal).unwrap();
-    bmi160.set_gyro_power_mode(bmi160::GyroscopePowerMode::Normal).unwrap();    
+    bmi160
+        .set_accel_power_mode(bmi160::AccelerometerPowerMode::Normal)
+        .unwrap();
+    bmi160
+        .set_gyro_power_mode(bmi160::GyroscopePowerMode::Normal)
+        .unwrap();
     let selector = bmi160::SensorSelector::new().accel();
 
     let mut tft_rst = porte.pe0.into_push_pull_output();
@@ -127,11 +150,15 @@ fn main() -> ! {
         let accel_x = bmi160.data(selector).unwrap().accel.unwrap().x;
 
         write!(str_buffer, "OPT3001: {} lux   ", lux).unwrap();
-        Text::new(&str_buffer, Point::new(20, y_margin.0 + cursor), style).draw(&mut display).unwrap();
+        Text::new(&str_buffer, Point::new(20, y_margin.0 + cursor), style)
+            .draw(&mut display)
+            .unwrap();
         str_buffer.clear();
 
         write!(str_buffer, "BMI160: {}           ", accel_x).unwrap();
-        Text::new(&str_buffer, Point::new(20, y_margin.0 + cursor + 20), style).draw(&mut display).unwrap();
+        Text::new(&str_buffer, Point::new(20, y_margin.0 + cursor + 20), style)
+            .draw(&mut display)
+            .unwrap();
         str_buffer.clear();
         cursor = cursor + 40;
 
@@ -145,7 +172,6 @@ fn main() -> ! {
         while sw_2.is_low().unwrap() {
             cortex_m::asm::nop();
         }
-
     }
     // loop {}
 }

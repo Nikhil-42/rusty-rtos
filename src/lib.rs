@@ -1,9 +1,7 @@
 #![no_std]
 #![no_main]
 
-use core::{
-    cell::UnsafeCell, mem::MaybeUninit, ops::{Deref, Index, IndexMut}, ptr::NonNull
-};
+use core::{cell::UnsafeCell, mem::MaybeUninit, ops::Deref};
 pub mod rtos;
 
 #[repr(transparent)]
@@ -32,43 +30,3 @@ impl<T> Deref for SyncUnsafeOnceCell<T> {
 }
 
 unsafe impl<T> Sync for SyncUnsafeOnceCell<T> {}
-
-
-struct StaticLinkedList<T, const N: usize> {
-    nodes: [Option<StaticLinkedListNode<T>>; N],
-}
-
-struct StaticLinkedListNode<T> {
-    data: T,
-    next: NonNull<StaticLinkedListNode<T>>,
-    prev: NonNull<StaticLinkedListNode<T>>,
-}
-
-impl<T, const N: usize> StaticLinkedList<T, N> {
-    pub const fn empty() -> Self {
-        StaticLinkedList {
-            nodes: [const { None }; N],
-        }
-    }
-
-    pub fn get(&self, index: usize) -> Option<&T> {
-        self.nodes[index].as_ref().map(|node| &node.data)
-    }
-
-    pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
-        self.nodes[index].as_mut().map(|node| &mut node.data)
-    }
-}
-
-impl<T, const N: usize> Index<usize> for StaticLinkedList<T, N> {
-    type Output = Option<StaticLinkedListNode<T>>;
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.nodes[index]
-    }
-}
-
-impl<T, const N: usize> IndexMut<usize> for StaticLinkedList<T, N> {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut self.nodes[index]
-    }
-}

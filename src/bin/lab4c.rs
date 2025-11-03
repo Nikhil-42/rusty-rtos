@@ -15,9 +15,9 @@ use tm4c123x_hal::{
         gpiof::{PF1, PF2},
         AlternateFunction, Output, PushPull, AF1,
     },
+    pac::{self, UART0},
     prelude::*,
     serial::Serial,
-    pac::{self, UART0},
 };
 
 use cortex_m_rt::entry;
@@ -164,7 +164,8 @@ fn main() -> ! {
     inst.add_thread(b"publish\0\0\0\0\0\0\0\0\0", 1, publisher)
         .expect("Failed to add publisher thread");
     let _ = inst
-        .add_periodic(2000, 0, periodic_task).expect("There is space in the Periodic Threads LL");
+        .add_periodic(2000, 0, periodic_task)
+        .expect("There is space in the Periodic Threads LL");
 
     unsafe {
         R_LED_S.set(portf.pf1.into_push_pull_output());

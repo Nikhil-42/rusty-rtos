@@ -1,4 +1,7 @@
-use core::{arch::{asm, global_asm, naked_asm}, mem::offset_of};
+use core::{
+    arch::{asm, global_asm, naked_asm},
+    mem::offset_of,
+};
 use cortex_m_rt::{exception, ExceptionFrame};
 
 use super::{periodic::_run_periodics, scheduler::_scheduler, syscall::_syscall, G8TOR_RTOS};
@@ -202,7 +205,7 @@ unsafe extern "C" fn SVCall() {
         // r12 now contains the interrupted stack pointer
         "ldr r1, [r12, #24]",   // Load the old PC into r1
         "ldrb r1, [r1, #-2]",   // Load the imm byte from instruction memory
-        "push {{r12, lr}}",       
+        "push {{r12, lr}}",
         // r1 now contains the immediate value
         // extern "C" syscall(r0: usize, r1, usize, r2: usize, r3: usize, imm: u8) -> (usize, usize)
         "sub sp, sp, #8",       // Args for the syscall

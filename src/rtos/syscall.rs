@@ -6,11 +6,7 @@ use super::{G8torAtomicHandle, G8torRtos, TCB};
 use super::{G8TOR_RTOS, NAME_LEN};
 
 #[inline(always)]
-pub fn sleep(
-    rtos: *mut G8torRtos,
-    running_tcb: Option<NonNull<TCB>>,
-    duration: u32,
-) -> usize {
+pub fn sleep(rtos: *mut G8torRtos, running_tcb: Option<NonNull<TCB>>, duration: u32) -> usize {
     if let Some(running_tcb) = running_tcb {
         // Pend a context switch
         cortex_m::peripheral::SCB::set_pendsv();
@@ -87,7 +83,7 @@ pub fn signal_semaphore(
                     break;
                 }
             }
-            
+
             if let Some(next_thread) = next_thread {
                 next_thread
             } else {
@@ -185,7 +181,7 @@ pub fn spawn_thread(
         sleep_until: 0,
         asleep: false,
         priority,
-        lr: 0xFD,  // EXC_RETURN to Thread mode, use PSP, no FPU
+        lr: 0xFD, // EXC_RETURN to Thread mode, use PSP, no FPU
         blocked_by: None,
         name: *name,
     }) as *mut TCB;
