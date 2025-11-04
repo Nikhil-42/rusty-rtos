@@ -354,7 +354,7 @@ pub fn get_joystick() -> (f32, f32) {
     let x = -((x as f32) / (0x7FF as f32) - 1.0);
     let y = (y as f32) / (0x7FF as f32) - 1.0;
 
-    if x.abs() < 0.05 && y.abs() < 0.05 {
+    if x.abs() < 0.1 && y.abs() < 0.1 {
         return (0.0, 0.0);
     }
 

@@ -9,9 +9,9 @@ pub enum CollisionShape<T> {
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub struct GameObject<T> {
     // Center position
-    position: (T, T),
+    pub position: (T, T),
     // Collider shape
-    collider: CollisionShape<T>,
+    pub collider: CollisionShape<T>,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
