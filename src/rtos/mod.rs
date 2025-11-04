@@ -33,7 +33,7 @@ const MAX_PERIODIC: usize = 2;
 const STACK_SIZE: usize = 512; // 2KB stack
 const NUM_ATOMICS: usize = 16;
 const NUM_FIFO: usize = 2;
-const FIFO_SIZE: usize = 8;
+const FIFO_SIZE: usize = 16;
 const NAME_LEN: usize = 16;
 
 const PERIOD_US: u32 = 1_000; // SysTick period in microseconds

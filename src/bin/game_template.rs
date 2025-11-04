@@ -2,272 +2,268 @@
 #![no_main]
 #![allow(static_mut_refs)]
 
-use core::f32::consts::PI;
-use micromath::F32Ext as _;
+use core::sync::atomic::AtomicBool;
 
 use cortex_m_rt::entry;
 use embedded_graphics::{
     pixelcolor::Rgb565,
     prelude::*,
-    primitives::{Circle, PrimitiveStyleBuilder, Rectangle, StyledDrawable as _},
+    primitives::{PrimitiveStyleBuilder, Rectangle, StyledDrawable as _},
 };
 use panic_halt as _;
 
 use eel4745c::{
     byte_str,
     game::*,
-    physics::{CollisionShape, GameObject},
-    rtos::{self, G8torMutex, G8torMutexHandle, G8torThreadHandle},
+    physics::Direction,
+    rtos::{self, G8torMutex, G8torMutexHandle, G8torSemaphoreHandle, G8torThreadHandle},
     SyncUnsafeOnceCell,
 };
 use rand::{Rng, SeedableRng};
 
 // Constants
-const GAME_BOUNDS: (i32, i32, i32, i32) = (10, 230, 50, 270); // (x_min, x_max, y_min, y_max)
+const SCALE: u32 = 10;
+const SCALE_SIZE: Size = Size::new(SCALE, SCALE);
+const GAME_BOUNDS: (i32, i32, i32, i32) = (1, 22, 5, 26); // (x_min, x_max, y_min, y_max)
 const BOUNDS_RECT: Rectangle = Rectangle::new(
-    Point::new(GAME_BOUNDS.0 - 1, GAME_BOUNDS.2 - 1),
+    Point::new(
+        GAME_BOUNDS.0 * SCALE as i32 - 1,
+        GAME_BOUNDS.2 * SCALE as i32 - 1,
+    ),
     Size::new(
-        (GAME_BOUNDS.1 - GAME_BOUNDS.0) as u32 + 2,
-        (GAME_BOUNDS.3 - GAME_BOUNDS.2) as u32 + 2,
+        (GAME_BOUNDS.1 - GAME_BOUNDS.0 + 1) as u32 * SCALE + 2,
+        (GAME_BOUNDS.3 - GAME_BOUNDS.2 + 1) as u32 * SCALE + 2,
     ),
 );
 
-const PLAYER_WIDTH: u32 = 30; // px
-const PLAYER_HEIGHT: u32 = 2; // px
-const PLAYER_SPEED: f32 = 20.0; // px/s
-const BALL_SPEED: f32 = 10.0; // px/s
-const BALL_RADIUS: u32 = 5; // px
+const MAX_SNAKE_LENGTH: usize = 64;
 
 // Atomics
+static DIE: AtomicBool = AtomicBool::new(false);
 
 // Shared Resources
-static PLAYER_POS_MUTEX: G8torMutex<f32> = G8torMutex::empty();
+static DIRECTION_MUTEX: G8torMutex<Direction> = G8torMutex::empty();
 
 // Mutex Handles
-static PLAYER_POS_MUT: SyncUnsafeOnceCell<G8torMutexHandle<f32>> = SyncUnsafeOnceCell::new();
+static DIRECTION_MUT: SyncUnsafeOnceCell<G8torMutexHandle<Direction>> = SyncUnsafeOnceCell::new();
 
 // FIFOs
 
 // Semaphore Handles
+static RESTART_SEM: SyncUnsafeOnceCell<G8torSemaphoreHandle> = SyncUnsafeOnceCell::new();
+static SCORE_SEM: SyncUnsafeOnceCell<G8torSemaphoreHandle> = SyncUnsafeOnceCell::new();
 
 // Threads
-extern "C" fn input_movement(_rtos: G8torThreadHandle) -> ! {
-    let player_pos_mut = &*PLAYER_POS_MUT;
+extern "C" fn input_direction(_rtos: G8torThreadHandle) -> ! {
     loop {
-        let (x, _) = get_joystick();
+        let (x, y) = get_joystick();
 
-        let player_pos = PLAYER_POS_MUTEX.get(rtos::take_mutex(player_pos_mut));
-        *player_pos += PLAYER_SPEED * 0.1 * x;
-        *player_pos = (*player_pos).clamp(
-            (GAME_BOUNDS.0 + (PLAYER_WIDTH / 2) as i32) as f32,
-            (GAME_BOUNDS.1 - (PLAYER_WIDTH / 2) as i32) as f32,
-        );
-        rtos::release_mutex(player_pos_mut, PLAYER_POS_MUTEX.release(player_pos));
+        let direction = DIRECTION_MUTEX.get(rtos::take_mutex(&*DIRECTION_MUT));
+        if y.abs() < 0.5 {
+            if x > 0.5 {
+                *direction = Direction::Right;
+            } else if x < -0.5 {
+                *direction = Direction::Left;
+            }
+        } else if x.abs() < 0.5 {
+            if y > 0.5 {
+                *direction = Direction::Up;
+            } else if y < -0.5 {
+                *direction = Direction::Down;
+            }
+        }
+        rtos::release_mutex(&*DIRECTION_MUT, DIRECTION_MUTEX.release(direction));
     }
 }
 
-extern "C" fn player_thread(_rtos: G8torThreadHandle) -> ! {
-    let player_pos_mut = &*PLAYER_POS_MUT;
-    let screen_mut = &*SCREEN_MUT;
+extern "C" fn snake_thread(rtos: G8torThreadHandle) -> ! {
+    let direction = DIRECTION_MUTEX.get(rtos::take_mutex(&*DIRECTION_MUT));
+    *direction = Direction::Right;
+    rtos::release_mutex(&*&DIRECTION_MUT, DIRECTION_MUTEX.release(direction));
 
-    let draw = PrimitiveStyleBuilder::new()
-        .fill_color(Rgb565::WHITE)
-        .stroke_width(0)
-        .build();
-    let erase = PrimitiveStyleBuilder::new()
-        .fill_color(Rgb565::BLACK)
-        .stroke_width(0)
-        .build();
+    let mut chain = [Direction::Right; MAX_SNAKE_LENGTH];
+    let mut length = 4;
+    let mut head_ptr: usize = length - 1;
+    let mut tail_ptr: usize = 0;
 
-    loop {
-        // Get current posititon
-        let player_pos = PLAYER_POS_MUTEX.get(rtos::take_mutex(player_pos_mut));
-        let current_pos = *player_pos;
-        rtos::release_mutex(player_pos_mut, PLAYER_POS_MUTEX.release(player_pos));
-
-        // Draw two rectangles (one on upper bound and one on lower)
-        let current_pos = current_pos as i32;
-        let upper_rect = Rectangle::new(
-            Point::new(current_pos - (PLAYER_WIDTH / 2) as i32, GAME_BOUNDS.2),
-            Size::new(PLAYER_WIDTH, PLAYER_HEIGHT),
-        );
-        let lower_rect = Rectangle::new(
-            Point::new(
-                current_pos - (PLAYER_WIDTH / 2) as i32,
-                GAME_BOUNDS.3 - PLAYER_HEIGHT as i32,
-            ),
-            Size::new(PLAYER_WIDTH, PLAYER_HEIGHT),
-        );
-
-        let screen = SCREEN_MUTEX.get(rtos::take_mutex(screen_mut));
-        upper_rect.draw_styled(&draw, screen).unwrap();
-        lower_rect.draw_styled(&draw, screen).unwrap();
-        rtos::release_mutex(screen_mut, SCREEN_MUTEX.release(screen));
-
-        rtos::sleep_ms(50);
-
-        let screen = SCREEN_MUTEX.get(rtos::take_mutex(screen_mut));
-        upper_rect.draw_styled(&erase, screen).unwrap();
-        lower_rect.draw_styled(&erase, screen).unwrap();
-        rtos::release_mutex(screen_mut, SCREEN_MUTEX.release(screen));
-    }
-}
-
-extern "C" fn ball_thread(rtos: G8torThreadHandle) -> ! {
-    let player_pos_mut = &*PLAYER_POS_MUT;
-    let draw = PrimitiveStyleBuilder::new()
-        .fill_color(Rgb565::WHITE)
-        .stroke_width(0)
-        .build();
-    let erase = PrimitiveStyleBuilder::new()
-        .fill_color(Rgb565::BLACK)
-        .stroke_width(0)
-        .build();
+    let mut pos: (i32, i32) = (GAME_BOUNDS.0, (GAME_BOUNDS.2 + GAME_BOUNDS.3) / 2);
+    let mut tail_pos = (pos.0 - (length as i32 - 1), pos.1);
 
     let mut rand = rand::rngs::SmallRng::seed_from_u64(rtos::get_system_time() as u64);
+    let mut fruit_pos = (
+        rand.random_range(GAME_BOUNDS.0..GAME_BOUNDS.1),
+        rand.random_range(GAME_BOUNDS.2..GAME_BOUNDS.3),
+    );
 
-    let mut ball_object: GameObject<f32> = GameObject {
-        position: (
-            (GAME_BOUNDS.1 + GAME_BOUNDS.0) as f32 / 2.0,
-            (GAME_BOUNDS.3 + GAME_BOUNDS.2) as f32 / 2.0,
+    let erase = PrimitiveStyleBuilder::new()
+        .fill_color(Rgb565::BLACK)
+        .build();
+    let draw = PrimitiveStyleBuilder::new()
+        .fill_color(Rgb565::GREEN)
+        .build();
+    let fruit_style = PrimitiveStyleBuilder::new().fill_color(Rgb565::RED).build();
+    let bounds_style = PrimitiveStyleBuilder::new()
+        .stroke_color(Rgb565::WHITE)
+        .stroke_width(1)
+        .build();
+
+    // Draw initial frame
+    let fruit_square = Rectangle::new(
+        Point::new(
+            fruit_pos.0 as i32 * SCALE as i32,
+            fruit_pos.1 as i32 * SCALE as i32,
         ),
-        collider: CollisionShape::Circle {
-            radius: BALL_RADIUS as f32,
-        },
-    };
+        SCALE_SIZE,
+    );
+    let bounds_rect = BOUNDS_RECT;
 
-    let dir = rand.random_range((-0.85 * PI)..(-0.15 * PI));
-    let mut vel = (BALL_SPEED * dir.cos(), BALL_SPEED * dir.sin());
-
-    // Draw bounds
     let screen = SCREEN_MUTEX.get(rtos::take_mutex(&*SCREEN_MUT));
-    BOUNDS_RECT
-        .draw_styled(
-            &PrimitiveStyleBuilder::new()
-                .stroke_color(Rgb565::WHITE)
-                .stroke_width(1)
-                .build(),
-            screen,
-        )
-        .unwrap();
+    fruit_square.draw_styled(&fruit_style, screen).unwrap();
+    bounds_rect.draw_styled(&bounds_style, screen).unwrap();
     rtos::release_mutex(&*SCREEN_MUT, SCREEN_MUTEX.release(screen));
 
     loop {
-        let player_pos_ref = PLAYER_POS_MUTEX.get(rtos::take_mutex(player_pos_mut));
-        let player_pos = *player_pos_ref;
-        rtos::release_mutex(player_pos_mut, PLAYER_POS_MUTEX.release(player_pos_ref));
-
-        let upper_player_object = GameObject {
-            position: (
-                player_pos,
-                (GAME_BOUNDS.2 + (PLAYER_HEIGHT / 2) as i32) as f32,
-            ),
-            collider: CollisionShape::Rectangle {
-                width: PLAYER_WIDTH as f32,
-                height: PLAYER_HEIGHT as f32,
-            },
-        };
-        let lower_player_object = GameObject {
-            position: (
-                player_pos,
-                (GAME_BOUNDS.3 - (PLAYER_HEIGHT / 2) as i32) as f32,
-            ),
-            collider: CollisionShape::Rectangle {
-                width: PLAYER_WIDTH as f32,
-                height: PLAYER_HEIGHT as f32,
-            },
-        };
-
-        if (vel.1 < 0.0 && ball_object.collides_with(&upper_player_object))
-            || (vel.1 > 0.0 && ball_object.collides_with(&lower_player_object))
-        {
-            // Snap to edge of player
-            if vel.1 < 0.0 {
-                ball_object.position.1 = upper_player_object.position.1
-                    + (PLAYER_HEIGHT as f32 / 2.0)
-                    + (BALL_RADIUS as f32);
-            } else {
-                ball_object.position.1 = lower_player_object.position.1
-                    - (PLAYER_HEIGHT as f32 / 2.0)
-                    - (BALL_RADIUS as f32);
-            }
-
-            // Bounce off player
-            vel.1 *= -1.0;
-
-            // Randomly jitter velocity and increase speed
-            let jitter: (f32, f32) = (rand.random_range(-1.0..1.0), rand.random_range(-1.0..1.0));
-            vel.0 = (vel.0 + jitter.0) * 1.1;
-            vel.1 = (vel.1 + jitter.1) * 1.1;
-        }
-
-        if ball_object.position.0 < (GAME_BOUNDS.0 + BALL_RADIUS as i32) as f32
-            || ball_object.position.0 > (GAME_BOUNDS.1 - BALL_RADIUS as i32) as f32
-        {
-            // Snap to edge of wall
-            if vel.0 < 0.0 {
-                ball_object.position.0 = (GAME_BOUNDS.0 + BALL_RADIUS as i32) as f32;
-            } else {
-                ball_object.position.0 = (GAME_BOUNDS.1 - BALL_RADIUS as i32) as f32;
-            }
-
-            // Bounce off wall
-            vel.0 *= -1.0;
-        }
-
-        if ball_object.position.1 < GAME_BOUNDS.2 as f32
-            || ball_object.position.1 > GAME_BOUNDS.3 as f32
-        {
-            rtos::spawn_thread(&byte_str("ball"), 1, ball_thread);
+        if DIE.load(core::sync::atomic::Ordering::Relaxed) {
+            // Confirm death
+            rtos::signal_semaphore(&*&RESTART_SEM);
             rtos.kill();
         }
 
-        // Update position
-        ball_object.position.0 += vel.0 * 0.1;
-        ball_object.position.1 += vel.1 * 0.1;
+        let direction = DIRECTION_MUTEX.get(rtos::take_mutex(&*DIRECTION_MUT));
+        let dir = *direction;
+        rtos::release_mutex(&*DIRECTION_MUT, DIRECTION_MUTEX.release(direction));
 
-        // Draw ball
-        let ball_circle = Circle::new(
-            Point::new(
-                ball_object.position.0 as i32 - BALL_RADIUS as i32 + 1,
-                ball_object.position.1 as i32 - BALL_RADIUS as i32 + 1,
-            ),
-            BALL_RADIUS * 2 - 2,
+        // Prevent turn-in-place
+        let last_dir = chain[if head_ptr > 0 {
+            head_ptr - 1
+        } else {
+            MAX_SNAKE_LENGTH - 1
+        }];
+        let dir = if dir != last_dir.opposite() {
+            dir
+        } else {
+            last_dir
+        };
+
+        // Calculate next position
+        let next_pos = dir.push(pos);
+        let next_tail_pos = chain[tail_ptr].push(tail_pos);
+        chain[head_ptr] = dir;
+
+        let head_square = Rectangle::new(
+            Point::new(next_pos.0 * SCALE as i32, next_pos.1 * SCALE as i32),
+            SCALE_SIZE,
         );
 
         let screen = SCREEN_MUTEX.get(rtos::take_mutex(&*SCREEN_MUT));
-        ball_circle.draw_styled(&draw, screen).unwrap();
+        head_square.draw_styled(&draw, screen).unwrap();
+        if next_pos.0 < GAME_BOUNDS.0 as i32
+            || next_pos.0 > GAME_BOUNDS.1 as i32
+            || next_pos.1 < GAME_BOUNDS.2 as i32
+            || next_pos.1 > GAME_BOUNDS.3 as i32
+        {
+            // Out of bounds
+            rtos::release_mutex(&*SCREEN_MUT, SCREEN_MUTEX.release(screen));
+            // Trigger restart
+            rtos::signal_semaphore(&*RESTART_SEM);
+            // Confirm death
+            rtos::signal_semaphore(&*RESTART_SEM);
+            rtos.kill();
+        } else if (0..length)
+            .map(|i| chain[(tail_ptr + i) % MAX_SNAKE_LENGTH])
+            .scan(tail_pos, |state, d| {
+                let current = *state;
+                *state = d.push(current);
+                Some(current)
+            }) // Get all snake positions
+            .any(|p| p == next_pos)
+        {
+            // Collided with self
+            rtos::release_mutex(&*SCREEN_MUT, SCREEN_MUTEX.release(screen));
+            // Trigger restart
+            rtos::signal_semaphore(&*RESTART_SEM);
+            // Confirm death
+            rtos::signal_semaphore(&*RESTART_SEM);
+            rtos.kill();
+        } else if next_pos == fruit_pos {
+            // Ate fruit
+            length += 1;
+            rtos::signal_semaphore(&*&SCORE_SEM);
+
+            fruit_pos = (
+                rand.random_range(GAME_BOUNDS.0..GAME_BOUNDS.1),
+                rand.random_range(GAME_BOUNDS.2..GAME_BOUNDS.3),
+            );
+            let fruit_square = Rectangle::new(
+                Point::new(fruit_pos.0 * SCALE as i32, fruit_pos.1 * SCALE as i32),
+                SCALE_SIZE,
+            );
+            fruit_square.draw_styled(&fruit_style, screen).unwrap();
+        } else {
+            // Normal movement
+            let tail_square = Rectangle::new(
+                Point::new(tail_pos.0 * SCALE as i32, tail_pos.1 * SCALE as i32),
+                SCALE_SIZE,
+            );
+            tail_square.draw_styled(&erase, screen).unwrap();
+            tail_pos = next_tail_pos;
+            tail_ptr = (tail_ptr + 1) % MAX_SNAKE_LENGTH;
+        }
         rtos::release_mutex(&*SCREEN_MUT, SCREEN_MUTEX.release(screen));
 
-        rtos::sleep_ms(100);
+        head_ptr = (head_ptr + 1) % MAX_SNAKE_LENGTH;
+        pos = next_pos;
+        rtos::sleep_ms(1000);
+    }
+}
+
+extern "C" fn restart_game(_rtos: G8torThreadHandle) -> ! {
+    loop {
+        rtos::wait_semaphore(&*&RESTART_SEM);
+        DIE.store(true, core::sync::atomic::Ordering::Relaxed);
+        rtos::wait_semaphore(&*&RESTART_SEM);
+        DIE.store(false, core::sync::atomic::Ordering::Relaxed);
+
+        rtos::sleep_ms(3000);
 
         let screen = SCREEN_MUTEX.get(rtos::take_mutex(&*SCREEN_MUT));
-        ball_circle.draw_styled(&erase, screen).unwrap();
+        screen.clear(Rgb565::BLACK).unwrap();
         rtos::release_mutex(&*SCREEN_MUT, SCREEN_MUTEX.release(screen));
+
+        rtos::spawn_thread(&byte_str("snake"), 1, snake_thread);
     }
 }
 
 #[entry]
 fn main() -> ! {
+    unsafe {
+        DIRECTION_MUTEX.init(Direction::Right);
+    }
     initialize(
         |rtos| {
-            rtos.add_thread(&byte_str("player"), 1, player_thread)
+            rtos.add_thread(&byte_str("snake"), 1, snake_thread)
                 .unwrap();
-            rtos.add_thread(&byte_str("input_direction"), 1, input_movement)
+            rtos.add_thread(&byte_str("restart"), 1, restart_game)
                 .unwrap();
-            rtos.add_thread(&byte_str("ball"), 1, ball_thread).unwrap();
+            rtos.add_thread(&byte_str("input_direction"), 1, input_direction)
+                .unwrap();
 
-            let player_pos_mut = rtos.init_mutex(&PLAYER_POS_MUTEX).unwrap();
+            let direction_mut = rtos.init_mutex(&DIRECTION_MUTEX).unwrap();
+            let restart_sem = rtos.init_semaphore(0).unwrap();
+            let score_sem = rtos.init_semaphore(0).unwrap();
 
             unsafe {
-                PLAYER_POS_MUTEX.init((GAME_BOUNDS.1 - GAME_BOUNDS.0) as f32 / 2.0);
-                PLAYER_POS_MUT.set(player_pos_mut);
+                DIRECTION_MUT.set(direction_mut);
+                RESTART_SEM.set(restart_sem);
+                SCORE_SEM.set(score_sem);
             }
         },
         None,
         None,
         None,
         None,
-        None,
+        Some(|| {
+            rtos::signal_semaphore(&*RESTART_SEM);
+        }),
     );
 }
