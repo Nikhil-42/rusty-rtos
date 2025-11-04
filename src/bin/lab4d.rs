@@ -5,7 +5,7 @@
 use core::fmt::Write as _;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};
-use eel4745c::{SyncUnsafeOnceCell, byte_str};
+use eel4745c::{byte_str, SyncUnsafeOnceCell};
 
 use eel4745c::graphics::Cube;
 use embedded_graphics::pixelcolor::Rgb565;

@@ -2,9 +2,9 @@
 #![no_main]
 
 use core::{cell::UnsafeCell, mem::MaybeUninit, ops::Deref};
+pub mod game;
 pub mod graphics;
 pub mod physics;
-pub mod game;
 pub mod rtos;
 
 #[repr(transparent)]

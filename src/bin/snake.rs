@@ -13,7 +13,11 @@ use embedded_graphics::{
 use panic_halt as _;
 
 use eel4745c::{
-    SyncUnsafeOnceCell, byte_str, game::*, physics::Direction, rtos::{self, G8torMutex, G8torMutexHandle, G8torSemaphoreHandle, G8torThreadHandle}
+    byte_str,
+    game::*,
+    physics::Direction,
+    rtos::{self, G8torMutex, G8torMutexHandle, G8torSemaphoreHandle, G8torThreadHandle},
+    SyncUnsafeOnceCell,
 };
 use rand::{Rng, SeedableRng};
 
@@ -22,8 +26,14 @@ const SCALE: u32 = 10;
 const SCALE_SIZE: Size = Size::new(SCALE, SCALE);
 const GAME_BOUNDS: (i32, i32, i32, i32) = (1, 22, 5, 26); // (x_min, x_max, y_min, y_max)
 const BOUNDS_RECT: Rectangle = Rectangle::new(
-    Point::new(GAME_BOUNDS.0 * SCALE as i32 - 1, GAME_BOUNDS.2 * SCALE as i32 - 1),
-    Size::new((GAME_BOUNDS.1 - GAME_BOUNDS.0 + 1) as u32 * SCALE + 2, (GAME_BOUNDS.3 - GAME_BOUNDS.2 + 1) as u32 * SCALE + 2),
+    Point::new(
+        GAME_BOUNDS.0 * SCALE as i32 - 1,
+        GAME_BOUNDS.2 * SCALE as i32 - 1,
+    ),
+    Size::new(
+        (GAME_BOUNDS.1 - GAME_BOUNDS.0 + 1) as u32 * SCALE + 2,
+        (GAME_BOUNDS.3 - GAME_BOUNDS.2 + 1) as u32 * SCALE + 2,
+    ),
 );
 
 const MAX_SNAKE_LENGTH: usize = 64;
@@ -124,8 +134,16 @@ extern "C" fn snake_thread(rtos: G8torThreadHandle) -> ! {
         rtos::release_mutex(&*DIRECTION_MUT, DIRECTION_MUTEX.release(direction));
 
         // Prevent turn-in-place
-        let last_dir = chain[if head_ptr > 0 {head_ptr - 1} else {MAX_SNAKE_LENGTH - 1}];
-        let dir = if dir != last_dir.opposite() { dir } else { last_dir };
+        let last_dir = chain[if head_ptr > 0 {
+            head_ptr - 1
+        } else {
+            MAX_SNAKE_LENGTH - 1
+        }];
+        let dir = if dir != last_dir.opposite() {
+            dir
+        } else {
+            last_dir
+        };
 
         // Calculate next position
         let next_pos = dir.push(pos);
@@ -216,28 +234,36 @@ extern "C" fn restart_game(_rtos: G8torThreadHandle) -> ! {
     }
 }
 
-
 #[entry]
 fn main() -> ! {
     unsafe {
         DIRECTION_MUTEX.init(Direction::Right);
     }
-    initialize(|rtos| {
-        rtos.add_thread(&byte_str("snake"), 1, snake_thread).unwrap();
-        rtos.add_thread(&byte_str("restart"), 1, restart_game).unwrap();
-        rtos.add_thread(&byte_str("input_direction"), 1, input_direction).unwrap();
+    initialize(
+        |rtos| {
+            rtos.add_thread(&byte_str("snake"), 1, snake_thread)
+                .unwrap();
+            rtos.add_thread(&byte_str("restart"), 1, restart_game)
+                .unwrap();
+            rtos.add_thread(&byte_str("input_direction"), 1, input_direction)
+                .unwrap();
 
-        let direction_mut = rtos.init_mutex(&DIRECTION_MUTEX).unwrap();
-        let restart_sem = rtos.init_semaphore(0).unwrap();
-        let score_sem = rtos.init_semaphore(0).unwrap();
+            let direction_mut = rtos.init_mutex(&DIRECTION_MUTEX).unwrap();
+            let restart_sem = rtos.init_semaphore(0).unwrap();
+            let score_sem = rtos.init_semaphore(0).unwrap();
 
-        unsafe {
-            DIRECTION_MUT.set(direction_mut);
-            RESTART_SEM.set(restart_sem);
-            SCORE_SEM.set(score_sem);
-        }
-    }, 
-    None, None, None, None, Some(|| {
-        rtos::signal_semaphore(&*RESTART_SEM);
-    }));
+            unsafe {
+                DIRECTION_MUT.set(direction_mut);
+                RESTART_SEM.set(restart_sem);
+                SCORE_SEM.set(score_sem);
+            }
+        },
+        None,
+        None,
+        None,
+        None,
+        Some(|| {
+            rtos::signal_semaphore(&*RESTART_SEM);
+        }),
+    );
 }
