@@ -1,5 +1,3 @@
-use embedded_graphics::{prelude::{DrawTarget, PixelColor}, primitives::{PrimitiveStyle, Rectangle, StyledDrawable}};
-
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum CollisionShape<T> {
     None,
@@ -20,6 +18,31 @@ pub struct GameObject<T> {
 pub enum Direction {
     Left,
     Right,
+    Up,
+    Down,
+}
+
+impl Direction {
+    pub fn opposite(&self) -> Self {
+        match self {
+            Direction::Left => Direction::Right,
+            Direction::Right => Direction::Left,
+            Direction::Up => Direction::Down,
+            Direction::Down => Direction::Up,
+        }
+    }
+
+    pub fn push<T>(&self, point: (T, T)) -> (T, T)
+    where
+        T: core::ops::Add<Output = T> + From<i8> + Copy,
+    {
+        match self {
+            Direction::Left => (point.0 + T::from(-1), point.1),
+            Direction::Right => (point.0 + T::from(1), point.1),
+            Direction::Up => (point.0, point.1 + T::from(-1)),
+            Direction::Down => (point.0, point.1 + T::from(1)),
+        }
+    }
 }
 
 impl GameObject<i32> {

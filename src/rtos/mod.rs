@@ -28,10 +28,10 @@ use cortex_m::peripheral::scb::SystemHandler;
 use cortex_m::peripheral::syst::SystClkSource;
 use tm4c123x_hal::pac::{Interrupt, NVIC};
 
-const MAX_THREADS: usize = 28;
+const MAX_THREADS: usize = 8;
 const MAX_PERIODIC: usize = 2;
-const STACK_SIZE: usize = 256; // 2KB stack
-const NUM_ATOMICS: usize = 8;
+const STACK_SIZE: usize = 512; // 2KB stack
+const NUM_ATOMICS: usize = 16;
 const NUM_FIFO: usize = 2;
 const FIFO_SIZE: usize = 8;
 const NAME_LEN: usize = 16;
@@ -49,7 +49,7 @@ pub struct G8torRtos {
     threads: [Option<TCB>; MAX_THREADS],
     periodic: [Option<PeriodicTCB>; MAX_PERIODIC],
     atomics: [u8; NUM_ATOMICS],
-    atomic_mask: u8,
+    atomic_mask: u16,
     fifos: [Option<G8torFifo>; NUM_FIFO],
     stacks: MaybeUninit<[[u32; STACK_SIZE]; MAX_THREADS]>,
     peripherals: cortex_m::Peripherals,
@@ -355,6 +355,14 @@ impl G8torRtos {
 #[repr(C)]
 pub struct G8torThreadHandle {
     id: usize,
+}
+
+pub fn get_system_time() -> u32 {
+    // SAFETY: We do not mutate system_time here, only read it
+    #[allow(static_mut_refs)]
+    const SYSTEM_TIME_PTR: *const u32 = unsafe { &raw const (*G8TOR_RTOS.as_ptr()).system_time };
+
+    unsafe { core::ptr::read_volatile(SYSTEM_TIME_PTR) }
 }
 
 pub fn yield_now() {

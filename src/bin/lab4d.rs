@@ -5,7 +5,7 @@
 use core::fmt::Write as _;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};
-use eel4745c::SyncUnsafeOnceCell;
+use eel4745c::{SyncUnsafeOnceCell, byte_str};
 
 use eel4745c::graphics::Cube;
 use embedded_graphics::pixelcolor::Rgb565;
@@ -465,11 +465,11 @@ fn main() -> ! {
         .init_mutex(&I2C_MUTEX)
         .expect("We haven't run out of atomics");
 
-    inst.add_thread(b"cam_move\0\0\0\0\0\0\0\0", 1, cam_move)
+    inst.add_thread(&byte_str("cam_move"), 1, cam_move)
         .expect("TCB list has space");
-    inst.add_thread(b"read_buttons\0\0\0\0", 1, read_buttons)
+    inst.add_thread(&byte_str("read_buttons"), 1, read_buttons)
         .expect("TCB list has space");
-    inst.add_thread(b"read_joystick\0\0\0", 1, read_joystick)
+    inst.add_thread(&byte_str("read_joystick"), 1, read_joystick)
         .expect("TCB list has space");
 
     inst.add_periodic(100, 0, print_world_coords)
