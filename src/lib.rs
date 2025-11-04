@@ -3,6 +3,7 @@
 
 use core::{cell::UnsafeCell, mem::MaybeUninit, ops::Deref};
 pub mod graphics;
+pub mod physics;
 pub mod rtos;
 
 #[repr(transparent)]

@@ -91,7 +91,7 @@ impl G8torRtos {
         name: &[u8; NAME_LEN],
         priority: u8,
         thread: extern "C" fn(G8torThreadHandle) -> !,
-    ) -> Result<(), ()> {
+    ) -> Result<usize, ()> {
         // Find an empty TCB slot
         let _self_ptr = self as *mut Self;
 
@@ -176,7 +176,7 @@ impl G8torRtos {
                     thread.prev = unsafe { NonNull::new_unchecked(thread as *mut TCB) };
                 }
 
-                return Ok(());
+                return Ok(id);
             }
         }
         return Err(()); // No empty slot found
