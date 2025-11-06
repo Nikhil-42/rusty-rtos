@@ -2,22 +2,21 @@
 #![no_main]
 #![allow(static_mut_refs)]
 
-use core::f32::consts::PI;
-use micromath::F32Ext as _;
-
 use cortex_m_rt::entry;
 use embedded_graphics::{
     pixelcolor::Rgb565,
     prelude::*,
-    primitives::{Circle, PrimitiveStyleBuilder, Rectangle, StyledDrawable as _},
+    primitives::{PrimitiveStyleBuilder, Rectangle, StyledDrawable as _},
 };
 use panic_halt as _;
 
 use eel4745c::{
-    SyncUnsafeOnceCell, byte_str, game::*, physics::{CollisionShape, Direction, GameObject}, rtos::{self, G8torMutex, G8torMutexHandle, G8torThreadHandle}
+    byte_str,
+    game::*,
+    physics::Direction,
+    rtos::{self, G8torMutex, G8torMutexHandle, G8torThreadHandle},
+    SyncUnsafeOnceCell,
 };
-use rand::{Rng, SeedableRng};
-use tm4c123x_hal::pac::gpio_porta::DIR;
 
 // Constants
 // if next_pos.0 < GAME_BOUNDS.0 as i32
@@ -39,7 +38,7 @@ const BOUNDS_RECT: Rectangle = Rectangle::new(
     ),
 );
 
-const NUM_COLS: usize = (GAME_BOUNDS.1 - GAME_BOUNDS.0 + 1) as usize;
+// const NUM_COLS: usize = (GAME_BOUNDS.1 - GAME_BOUNDS.0 + 1) as usize;
 
 // Atomics
 // Shared Resources
@@ -48,7 +47,8 @@ static DIRECTION_MUTEX: G8torMutex<Option<Direction>> = G8torMutex::empty();
 
 // Mutex Handles
 static PLAYER_POS_MUT: SyncUnsafeOnceCell<G8torMutexHandle<(i32, i32)>> = SyncUnsafeOnceCell::new();
-static DIRECTION_MUT: SyncUnsafeOnceCell<G8torMutexHandle<Option<Direction>>> = SyncUnsafeOnceCell::new();
+static DIRECTION_MUT: SyncUnsafeOnceCell<G8torMutexHandle<Option<Direction>>> =
+    SyncUnsafeOnceCell::new();
 
 // FIFOs
 static ROW_CONFIG_FIFO: SyncUnsafeOnceCell<rtos::G8torFifoHandle> = SyncUnsafeOnceCell::new();
@@ -81,8 +81,7 @@ extern "C" fn input_movement(_rtos: G8torThreadHandle) -> ! {
                 // Down
                 *direction = Some(Direction::Down);
             }
-        }
-        else {
+        } else {
             *direction = None;
         }
 
@@ -185,7 +184,7 @@ extern "C" fn row_thread(rtos: G8torThreadHandle) -> ! {
         .build();
 
     let mut x = 0.0;
-    let mut rand = rand::rngs::SmallRng::seed_from_u64(rtos::get_system_time() as u64);
+    // let mut rand = rand::rngs::SmallRng::seed_from_u64(rtos::get_system_time() as u64);
 
     loop {
         let player_pos_ref = PLAYER_POS_MUTEX.get(rtos::take_mutex(player_pos_mut));
@@ -203,26 +202,38 @@ extern "C" fn row_thread(rtos: G8torThreadHandle) -> ! {
         }
 
         // Draw row
-        let pixel_y = GAME_BOUNDS.2 + row_y * SCALE as i32;
+        let pixel_y = (GAME_BOUNDS.2 + row_y) * SCALE as i32;
         let mut occupancy_bits = occupancy;
 
         let screen = SCREEN_MUTEX.get(rtos::take_mutex(&*SCREEN_MUT));
-        for i in -8..8 {
-            let pixel_x = GAME_BOUNDS.0 + ((i as i32) * SCALE as i32 + x as i32);
-            let block = if pixel_x >= GAME_BOUNDS.0 && pixel_x < GAME_BOUNDS.1 - SCALE as i32 {
-                Some(Rectangle::new(Point::new(pixel_x, pixel_y), SCALE_SIZE))
-            } else if pixel_x < GAME_BOUNDS.0 && pixel_x + SCALE as i32 > GAME_BOUNDS.0 {
+        for i in 0..16 {
+            let subpixel_x = (i as f32 + x) % 16.0 - 8.0;
+            let pixel_x = (subpixel_x * SCALE as f32) as i32
+                + (GAME_BOUNDS.0 * SCALE as i32 + GAME_BOUNDS.1 * SCALE as i32) / 2;
+            let block = if pixel_x + SCALE as i32 <= GAME_BOUNDS.0 {
+                // Completely off left edge
+                None
+            } else if pixel_x < GAME_BOUNDS.0 * SCALE as i32 && pixel_x + SCALE as i32 > GAME_BOUNDS.0 * SCALE as i32 {
                 // Partial block on left edge
                 Some(Rectangle::new(
-                    Point::new(GAME_BOUNDS.0, pixel_y),
-                    Size::new((pixel_x + SCALE as i32 - GAME_BOUNDS.0) as u32, SCALE),
+                    Point::new(GAME_BOUNDS.0 * SCALE as i32, pixel_y),
+                    Size::new((pixel_x + SCALE as i32 - GAME_BOUNDS.0 * SCALE as i32) as u32, SCALE),
                 ))
-            } else if pixel_x < GAME_BOUNDS.1 && pixel_x + SCALE as i32 > GAME_BOUNDS.1 {
+            } else if pixel_x > GAME_BOUNDS.0 * SCALE as i32 && (pixel_x + SCALE as i32) < GAME_BOUNDS.1 * SCALE as i32 {
+                // Full block
+                Some(Rectangle::new(
+                    Point::new(pixel_x, pixel_y),
+                    SCALE_SIZE,
+                ))
+            } else if pixel_x < GAME_BOUNDS.1 * SCALE as i32 && (pixel_x + SCALE as i32) > GAME_BOUNDS.1 * SCALE as i32 {
                 // Partial block on right edge
                 Some(Rectangle::new(
                     Point::new(pixel_x, pixel_y),
-                    Size::new((GAME_BOUNDS.1 - pixel_x) as u32, SCALE),
+                    Size::new((GAME_BOUNDS.1 * SCALE as i32 - pixel_x) as u32, SCALE),
                 ))
+            } else if pixel_x >= GAME_BOUNDS.1 * SCALE as i32 {
+                // Completely off right edge
+                None
             } else {
                 None
             };
@@ -245,13 +256,14 @@ extern "C" fn row_thread(rtos: G8torThreadHandle) -> ! {
 
         // Update position
         x += speed;
-        x = (x + 16.0 * SCALE as f32) % (32.0 * SCALE as f32) - (16.0 * SCALE as f32);
+        x %= 16.0;
 
         rtos::sleep_ms(100);
     }
 }
 
 fn configure_row(speed: f32, row_y: i32, occupancy: u16, fg_color: Rgb565, bg_color: Rgb565) {
+    let speed = speed / 10.0; // Slow down speed for visibility
     let row_config_fifo = &*ROW_CONFIG_FIFO;
     let row_ready_sem = &*ROW_READY_SEM;
 
@@ -284,7 +296,7 @@ fn main() -> ! {
             rtos.add_thread(&byte_str("player"), 1, player_thread)
                 .unwrap();
             rtos.add_thread(&byte_str("input_direction"), 1, input_movement)
-            .unwrap();
+                .unwrap();
             rtos.add_thread(&byte_str("init"), 0, init_thread).unwrap();
 
             let player_pos_mut = rtos.init_mutex(&PLAYER_POS_MUTEX).unwrap();
