@@ -139,3 +139,57 @@ impl<T: I2c> I2c for super::G8torMutexHandle<T> {
         res
     }
 }
+
+impl<D, T: eh0::serial::Read<D>> eh0::serial::Read<D> for &super::G8torMutexHandle<T> {
+    type Error = T::Error;
+
+    fn read(&mut self) -> Result<D, nb::Error<Self::Error>> {
+        loop {
+            let lock = super::take_mutex(&self);
+            let bus = self.mutex.get(lock);
+            let res = bus.read();
+            let lock = self.mutex.release(bus);
+            super::release_mutex(&self, lock);
+
+            match res {
+                Ok(v) => return Ok(v),
+                Err(nb::Error::WouldBlock) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+    }
+}
+
+impl<D: Copy, T: eh0::serial::Write<D>> eh0::serial::Write<D> for &super::G8torMutexHandle<T> {
+    type Error = T::Error;
+
+    fn write(&mut self, word: D) -> Result<(), nb::Error<Self::Error>> {
+        loop {
+            let lock = super::take_mutex(&self);
+            let bus = self.mutex.get(lock);
+            let res = bus.write(word);
+            let lock = self.mutex.release(bus);
+            super::release_mutex(&self, lock);
+
+            match res {
+                Err(nb::Error::WouldBlock) => continue,
+                other => break other,
+            }
+        }
+    }
+
+    fn flush(&mut self) -> Result<(), nb::Error<Self::Error>> {
+        loop {
+            let lock = super::take_mutex(&self);
+            let bus = self.mutex.get(lock);
+            let res = bus.flush();
+            let lock = self.mutex.release(bus);
+            super::release_mutex(&self, lock);
+
+            match res {
+                Err(nb::Error::WouldBlock) => continue,
+                other => break other,
+            }
+        }
+    }
+}
