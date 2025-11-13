@@ -128,11 +128,6 @@ extern "C" fn beagle_uart_rx(_rtos: G8torThreadHandle) -> ! {
     let rx_fifo_handle = &*UART4_RX_FIFO;
     let mut uart = &*UART4_MUT;
 
-    // loop {
-    //     // Forward to debug uart
-    //     let val = uart_handle.read().unwrap();
-    //     debug_uart.write(val).unwrap();
-    // }
     'restart: loop {
         for _ in 0..3 {
             match uart.read() {
@@ -161,18 +156,10 @@ extern "C" fn beagle_uart_rx(_rtos: G8torThreadHandle) -> ! {
 
 // extern "C" fn nrf_uart_rx(_rtos: G8torThreadHandle) -> ! {
 //     let rx_fifo_handle = &*UART3_RX_FIFO;
-//     let uart_handle = &*UART3_MUT;
+//     let mut uart = &*UART3_MUT;
 
 //     loop {
-//         let uart = UART3_MUTEX.get(rtos::take_mutex(uart_handle));
-//         let val = uart.read();
-//         rtos::release_mutex(uart_handle, UART3_MUTEX.release(uart));
-//         let val = match val {
-//             Ok(v) => v,
-//             Err(nb::Error::WouldBlock) => {
-//                 continue;
-//             }
-//         };
+//         let val = uart.read().unwrap();
 //         rtos::write_fifo(rx_fifo_handle, val as u32);
 //     }
 // }
@@ -208,32 +195,37 @@ extern "C" fn draw_rect(_rtos: G8torThreadHandle) -> ! {
         Rgb565::RED,
     ];
 
-    let mut num_faces = 0usize;
+    let mut num_faces= 0;
     let mut bounding_boxes = [Rectangle::default(); 8]; // Max 8 faces
 
     loop {
-        for i in 0usize..num_faces {
-            let style = PrimitiveStyle::with_stroke(Rgb565::BLACK, 1);
-            bounding_boxes[i].draw_styled(&style, display).unwrap();
-        }
+        let mut new_bounding_boxes = [Rectangle::default(); 8];
+        let new_num_faces = rtos::read_fifo(uart_rx).min(8) as usize;
 
-        num_faces = rtos::read_fifo(uart_rx).min(8) as usize;
-
-        for i in 0usize..(num_faces.min(8) as usize) {
+        for i in 0usize..new_num_faces {
             let x = f32::from_bits(rtos::read_fifo(uart_rx));
             let y = f32::from_bits(rtos::read_fifo(uart_rx));
             let w = f32::from_bits(rtos::read_fifo(uart_rx));
             let h = f32::from_bits(rtos::read_fifo(uart_rx));
 
-            bounding_boxes[i] = Rectangle::new(
+            new_bounding_boxes[i] = Rectangle::new(
                 Point::new((x * WIDTH) as i32, (y * HEIGHT) as i32),
                 Size::new((w * WIDTH) as u32, (h * HEIGHT) as u32),
             );
+        }
 
-            let style = PrimitiveStyle::with_stroke(COLORS[i], 1);
+        for i in 0usize..num_faces {
+            let style = PrimitiveStyle::with_stroke(Rgb565::BLACK, 1);
             bounding_boxes[i].draw_styled(&style, display).unwrap();
         }
 
+        for i in 0usize..new_num_faces {
+            let style = PrimitiveStyle::with_stroke(COLORS[i], 1);
+            new_bounding_boxes[i].draw_styled(&style, display).unwrap();
+        }
+
+        num_faces = new_num_faces;
+        bounding_boxes = new_bounding_boxes;
         rtos::sleep_ms(100);
     }
 }
