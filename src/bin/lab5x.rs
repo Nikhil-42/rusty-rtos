@@ -21,16 +21,16 @@ use panic_halt as _;
 use tm4c123x_hal::{
     self as hal,
     gpio::{
-        AF1, AF2, AlternateFunction, Floating, OpenDrain, Output, PushPull, gpioa::{PA0, PA1, PA2, PA4, PA5}, gpioc::{PC4, PC5, PC6, PC7}, gpioe::PE0, gpiof::{PF3, PF4}
+        AF1, AF2, AF3, AlternateFunction, Floating, OpenDrain, Output, PullUp, PushPull, gpioa::{PA0, PA1, PA2, PA4, PA5}, gpioc::{PC4, PC5, PC6, PC7}, gpioe::PE0, gpiof::{PF3, PF4}
     },
-    pac::{self, SSI0, UART0, UART3, UART4},
+    pac::{self, I2C0, I2C1, SSI0, UART0, UART3, UART4},
     prelude::*,
     serial::Serial,
     spi::Spi,
 };
 
 use cortex_m_rt::entry;
-use embedded_hal::digital::OutputPin;
+use embedded_hal::{digital::OutputPin, i2c::I2c};
 use eh0::serial::{Read as _, Write as _};
 
 static mut SCREEN_S: MaybeUninit<
@@ -154,28 +154,26 @@ extern "C" fn beagle_uart_rx(_rtos: G8torThreadHandle) -> ! {
     }
 }
 
-// extern "C" fn nrf_uart_rx(_rtos: G8torThreadHandle) -> ! {
-//     let rx_fifo_handle = &*UART3_RX_FIFO;
-//     let mut uart = &*UART3_MUT;
+extern "C" fn nrf_uart_rx(_rtos: G8torThreadHandle) -> ! {
+    let rx_fifo_handle = &*UART3_RX_FIFO;
+    let mut uart = &*UART3_MUT;
 
-//     loop {
-//         let val = uart.read().unwrap();
-//         rtos::write_fifo(rx_fifo_handle, val as u32);
-//     }
-// }
+    loop {
+        let val = uart.read().unwrap();
+        rtos::write_fifo(rx_fifo_handle, core::hint::black_box(val as u32));
+    }
+}
 
-// extern "C" fn nrf_uart_tx(_rtos: G8torThreadHandle) -> ! {
-//     let rx_fifo_handle = &*UART3_TX_FIFO;
-//     let uart_handle = &*UART3_MUT;
+extern "C" fn nrf_uart_tx(_rtos: G8torThreadHandle) -> ! {
+    let rx_fifo_handle = &*UART3_TX_FIFO;
+    let mut uart = &*UART3_MUT;
 
-//     loop {
-//         let val = rtos::read_fifo(rx_fifo_handle);
-
-//         let uart = UART3_MUTEX.get(rtos::take_mutex(uart_handle));
-//         uart.write_all(val.to_le_bytes().as_slice());
-//         rtos::release_mutex(uart_handle, UART3_MUTEX.release(uart));
-//     }
-// }
+    loop {
+        let val = 0x73;
+        // let val = rtos::read_fifo(rx_fifo_handle);
+        uart.write(val).unwrap();
+    }
+}
 
 extern "C" fn draw_rect(_rtos: G8torThreadHandle) -> ! {
     let uart_rx = &*UART4_RX_FIFO;
@@ -255,9 +253,37 @@ fn main() -> ! {
     let clocks = sc.clock_setup.freeze();
 
     let mut porta = p.GPIO_PORTA.split(&sc.power_control);
+    let mut portb = p.GPIO_PORTB.split(&sc.power_control);
     let mut portc = p.GPIO_PORTC.split(&sc.power_control);
     let porte = p.GPIO_PORTE.split(&sc.power_control);
     let portf = p.GPIO_PORTF.split(&sc.power_control);
+
+    // Activate I2C1
+    let i2c1 = hal::i2c::I2C::<I2C1, _>::new(
+        p.I2C1,
+        (
+            porta.pa6.into_af_push_pull::<AF3>(&mut porta.control),
+            porta.pa7.into_af_open_drain::<AF3, PullUp>(&mut porta.control)
+        ),
+        100.khz(),
+        &clocks,
+        &sc.power_control,
+    );
+
+    let mut i2c0 = hal::i2c::I2C::<I2C0, _>::new(
+        p.I2C0,
+        (
+            portb.pb2.into_af_push_pull::<AF3>(&mut portb.control),
+            portb.pb3.into_af_open_drain::<AF3, PullUp>(&mut portb.control),
+        ),
+        100.khz(),
+        &clocks,
+        &sc.power_control,
+    );
+
+    i2c0.write(0x21, &[0x02, 0xFE]).unwrap(); // Set the output to low (Turn off Bluetooth)
+    i2c0.write(0x21, &[0x06, 0xFE]).unwrap(); // Configure the PCA9555 Port0 pin 0 as output
+    i2c0.write(0x21, &[0x02, 0xFF]).unwrap(); // Set the output to high (Turn on Bluetooth)
 
     // Activate UART4
     let uart4 = hal::serial::Serial::uart4(
@@ -287,7 +313,7 @@ fn main() -> ! {
             .into_af_push_pull::<hal::gpio::AF1>(&mut portc.control),
         (),
         (),
-        115200_u32.bps(),
+        1000_000_u32.bps(),
         hal::serial::NewlineMode::Binary,
         &clocks,
         &sc.power_control,
@@ -389,10 +415,10 @@ fn main() -> ! {
 
     inst.add_thread(&byte_str("beagle_uart_rx"), 2, beagle_uart_rx)
         .expect("Failed to add uart_rx thread");
-    // inst.add_thread(&byte_str("nrf_uart_rx"), 2, nrf_uart_rx)
-    //     .expect("Failed to add uart_rx thread");
-    // inst.add_thread(&byte_str("nrf_uart_rx"), 2, nrf_uart_tx)
-    //     .expect("Failed to add uart_rx thread");
+    inst.add_thread(&byte_str("nrf_uart_rx"), 2, nrf_uart_rx)
+        .expect("Failed to add uart_rx thread");
+    inst.add_thread(&byte_str("nrf_uart_rx"), 2, nrf_uart_tx)
+        .expect("Failed to add uart_rx thread");
     inst.add_thread(&byte_str("draw_rect"), 2, draw_rect)
         .expect("Failed to add draw_rect thread");
     inst.add_thread(&byte_str("debug_tx"), 2, debug_tx)
