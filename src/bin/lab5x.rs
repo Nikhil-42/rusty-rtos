@@ -57,8 +57,8 @@ static mut SCREEN_S: MaybeUninit<
 > = MaybeUninit::uninit();
 
 static UART4_RX_FIFO: SyncUnsafeOnceCell<G8torFifoHandle> = SyncUnsafeOnceCell::new();
-static UART3_RX_FIFO: SyncUnsafeOnceCell<G8torFifoHandle> = SyncUnsafeOnceCell::new();
-static UART3_TX_FIFO: SyncUnsafeOnceCell<G8torFifoHandle> = SyncUnsafeOnceCell::new();
+static BLE2UART_FIFO: SyncUnsafeOnceCell<G8torFifoHandle> = SyncUnsafeOnceCell::new();
+static UART2BLE_FIFO: SyncUnsafeOnceCell<G8torFifoHandle> = SyncUnsafeOnceCell::new();
 static UART0_TX_FIFO: SyncUnsafeOnceCell<G8torFifoHandle> = SyncUnsafeOnceCell::new();
 
 static UART4_MUT: SyncUnsafeOnceCell<
@@ -154,27 +154,6 @@ extern "C" fn beagle_uart_rx(_rtos: G8torThreadHandle) -> ! {
     }
 }
 
-extern "C" fn nrf_uart_rx(_rtos: G8torThreadHandle) -> ! {
-    let rx_fifo_handle = &*UART3_RX_FIFO;
-    let mut uart = &*UART3_MUT;
-
-    loop {
-        let val = uart.read().unwrap();
-        rtos::write_fifo(rx_fifo_handle, core::hint::black_box(val as u32));
-    }
-}
-
-extern "C" fn nrf_uart_tx(_rtos: G8torThreadHandle) -> ! {
-    let rx_fifo_handle = &*UART3_TX_FIFO;
-    let mut uart = &*UART3_MUT;
-
-    loop {
-        let val = 0x73;
-        // let val = rtos::read_fifo(rx_fifo_handle);
-        uart.write(val).unwrap();
-    }
-}
-
 extern "C" fn draw_rect(_rtos: G8torThreadHandle) -> ! {
     let uart_rx = &*UART4_RX_FIFO;
     let display = unsafe { &mut *SCREEN_S.as_mut_ptr() };
@@ -228,14 +207,43 @@ extern "C" fn draw_rect(_rtos: G8torThreadHandle) -> ! {
     }
 }
 
+extern "C" fn nrf_uart_rx(_rtos: G8torThreadHandle) -> ! {
+    let rx_fifo_handle = &*BLE2UART_FIFO;
+    let mut uart = &*UART3_MUT;
+
+    loop {
+        let val = uart.read().unwrap();
+        rtos::write_fifo(rx_fifo_handle, val as u32);
+    }
+}
+
+extern "C" fn nrf_uart_tx(_rtos: G8torThreadHandle) -> ! {
+    let tx_fifo_handle = &*UART2BLE_FIFO;
+    let mut uart = &*UART3_MUT;
+
+    loop {
+        let val = rtos::read_fifo(tx_fifo_handle);
+        uart.write(val as u8).unwrap();
+    }
+}
+
 extern "C" fn debug_tx(_rtos: G8torThreadHandle) -> ! {
-    let tx_fifo_handle = &*UART0_TX_FIFO;
+    let tx_fifo_handle = &*&BLE2UART_FIFO;
     let mut uart_handle = &*UART0_MUT;
 
     loop {
         let val = rtos::read_fifo(tx_fifo_handle);
-
         uart_handle.write(val as u8).unwrap();
+    }
+}
+
+extern "C" fn debug_rx(_rtos: G8torThreadHandle) -> ! {
+    let rx_fifo_handle = &*UART2BLE_FIFO;
+    let mut uart_handle = &*UART0_MUT;
+
+    loop {
+        let val = uart_handle.read().unwrap();
+        rtos::write_fifo(rx_fifo_handle, val as u32);
     }
 }
 
@@ -257,18 +265,6 @@ fn main() -> ! {
     let mut portc = p.GPIO_PORTC.split(&sc.power_control);
     let porte = p.GPIO_PORTE.split(&sc.power_control);
     let portf = p.GPIO_PORTF.split(&sc.power_control);
-
-    // Activate I2C1
-    let i2c1 = hal::i2c::I2C::<I2C1, _>::new(
-        p.I2C1,
-        (
-            porta.pa6.into_af_push_pull::<AF3>(&mut porta.control),
-            porta.pa7.into_af_open_drain::<AF3, PullUp>(&mut porta.control)
-        ),
-        100.khz(),
-        &clocks,
-        &sc.power_control,
-    );
 
     let mut i2c0 = hal::i2c::I2C::<I2C0, _>::new(
         p.I2C0,
@@ -423,6 +419,8 @@ fn main() -> ! {
         .expect("Failed to add draw_rect thread");
     inst.add_thread(&byte_str("debug_tx"), 2, debug_tx)
         .expect("Failed to add debug_tx thread");
+    inst.add_thread(&byte_str("debug_rx"), 2, debug_rx)
+        .expect("Failed to add debug_rx thread");
 
     unsafe {
         SCREEN_S.as_mut_ptr().write(display);
@@ -437,8 +435,8 @@ fn main() -> ! {
         UART0_MUT.set(uart0_handle);
 
         UART4_RX_FIFO.set(uart4_rx_fifo);
-        UART3_RX_FIFO.set(uart3_rx_fifo);
-        UART3_TX_FIFO.set(uart3_tx_fifo);
+        BLE2UART_FIFO.set(uart3_rx_fifo);
+        UART2BLE_FIFO.set(uart3_tx_fifo);
         UART0_TX_FIFO.set(uart0_tx_fifo);
 
         inst.launch()
