@@ -23,7 +23,7 @@ use tm4c123x_hal::{
     gpio::{
         AF1, AF2, AF3, AlternateFunction, Floating, OpenDrain, Output, PullUp, PushPull, gpioa::{PA0, PA1, PA2, PA4, PA5}, gpioc::{PC4, PC5, PC6, PC7}, gpioe::PE0, gpiof::{PF3, PF4}
     },
-    pac::{self, I2C0, I2C1, SSI0, UART0, UART3, UART4},
+    pac::{self, I2C0, SSI0, UART0, UART3, UART4},
     prelude::*,
     serial::Serial,
     spi::Spi,
