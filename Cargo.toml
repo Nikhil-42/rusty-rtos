@@ -11,6 +11,7 @@ version = "0.1.0"
 cortex-m = { path = "../cortex-m/cortex-m" }
 cortex-m-rt = { path = "../cortex-m/cortex-m-rt" }
 tm4c123x-hal = { path = "../tm4c-hal/tm4c123x-hal" }
+pca9555 = { path = "../pca9555/" }
 
 [profile.dev]
 opt-level = 3
