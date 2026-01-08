@@ -1,7 +1,7 @@
-# EEL4745C
+# Rusty RTOS
 
-This project contains all of the labs for EEL4745C - Embedded Systems Design using ARM Cortex-M4F.
-Each lab is contained in its own binary target.
+The rusty-rtos is a simple RTOS built in Rust for the ARM-Cortex M4F family of processors. It includes features
+such as a preemptive scheduler, hardware-timed callback scheduling, interrupt callback registration, and interprocess communication (mutex, semaphore, and IO stream).
 
 ## Building 
 
@@ -14,8 +14,6 @@ Dependencies:
 If you have the dependencies installed, launch OpenOCD and then you can run the project with:
 
 ```sh
-cargo rb <lab#[abx]>
+cargo rb <bin>
 ```
-
-Where `<lab#a>` is the lab number you want to build (e.g., `lab1x`, `lab2a`, etc.).
 
